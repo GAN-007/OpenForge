@@ -451,6 +451,7 @@ impl Engine {
                 let execution = result?;
 
                 if let Some(commit) = &execution.commit {
+                    let pre_integration_sha = git.workspace_head(&integration).await?;
                     let integrated_sha =
                         match git.integrate_commit(&integration, commit).await {
                             Ok(sha) => sha,
@@ -463,12 +464,32 @@ impl Engine {
                             }
                         };
 
-                    self.verify_acceptance(
-                        &integration,
-                        &execution.task,
-                        use_docker,
-                    )
-                    .await?;
+                    if let Err(error) = self
+                        .verify_acceptance(&integration, &execution.task, use_docker)
+                        .await
+                    {
+                        git.reset_hard(&integration, &pre_integration_sha).await?;
+                        let mut failed = task.clone();
+                        failed.status = TaskStatus::Failed;
+                        failed.updated_at = Utc::now();
+                        self.store.upsert_task(&failed)?;
+                        self.store.append_event(
+                            Some(run.id),
+                            Some(task.id),
+                            Actor {
+                                kind: "system".into(),
+                                id: "merge-coordinator".into(),
+                            },
+                            "git.integrationRolledBack",
+                            json!({
+                                "source_commit": commit,
+                                "reverted_to": pre_integration_sha,
+                                "failed_integration_sha": integrated_sha,
+                                "error": error.to_string()
+                            }),
+                        )?;
+                        return Err(error.context("post-integration acceptance failed"));
+                    }
 
                     self.store.append_event(
                         Some(run.id),
