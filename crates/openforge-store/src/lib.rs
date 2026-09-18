@@ -253,7 +253,7 @@ impl Store {
             .optional()?;
 
         let timestamp = Utc::now();
-        let event_id = Uuid::new_v4();
+        let event_id = Uuid::now_v7();
         let event_type = event_type.into();
 
         let canonical = serde_json::json!({
@@ -370,6 +370,71 @@ impl Store {
         Ok(events)
     }
 
+    pub fn list_all_events(
+        &self,
+        after_sequence: i64,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT sequence,event_id,run_id,task_id,timestamp,actor_json,event_type,
+                    payload_json,previous_event_hash,event_hash
+             FROM events
+             WHERE sequence>?1
+             ORDER BY sequence
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(
+            params![after_sequence, limit.min(100_000) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (
+                sequence,
+                event_id,
+                run_id,
+                task_id,
+                timestamp,
+                actor,
+                event_type,
+                payload,
+                previous,
+                event_hash,
+            ) = row?;
+
+            events.push(EventEnvelope {
+                event_id: Uuid::parse_str(&event_id)?,
+                sequence,
+                run_id: run_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
+                    .with_timezone(&Utc),
+                actor: serde_json::from_str(&actor)?,
+                event_type,
+                payload: serde_json::from_str(&payload)?,
+                previous_event_hash: previous,
+                event_hash,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn record_cost(
         &self,
         run_id: Uuid,
@@ -392,7 +457,7 @@ impl Store {
                 input_tokens,output_tokens,created_at
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
-                Uuid::new_v4().to_string(),
+                Uuid::now_v7().to_string(),
                 run_id.to_string(),
                 task_id.map(|value| value.to_string()),
                 agent_id,
