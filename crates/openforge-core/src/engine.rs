@@ -22,7 +22,7 @@ use openforge_sandbox::{
     SandboxPolicy,
 };
 use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
-use openforge_store::Store;
+use openforge_store::{CostRecord, Store};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -255,16 +255,16 @@ impl Engine {
             bail!("planner exceeded its hard cost budget");
         }
 
-        self.store.record_cost(
-            run.id,
-            None,
-            Some("planner"),
-            &response.provider,
-            &response.model,
-            response.cost_usd,
-            response.input_tokens,
-            response.output_tokens,
-        )?;
+        self.store.record_cost(CostRecord {
+            run_id: run.id,
+            task_id: None,
+            agent_id: Some("planner"),
+            provider: &response.provider,
+            model: &response.model,
+            amount_usd: response.cost_usd,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+        })?;
 
         let plan: Plan = serde_json::from_str(extract_json(&response.text))
             .context("planner returned invalid JSON")?;
