@@ -1,0 +1,10 @@
+[package]
+name = "openforge-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ignore.workspace = true
+serde.workspace = true
