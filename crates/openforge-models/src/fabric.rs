@@ -152,7 +152,6 @@ impl ModelProvider for FabricProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
     use async_trait::async_trait;
     use openforge_protocol::{
         DataClassification, ModelRequirements, ModelSpec,
