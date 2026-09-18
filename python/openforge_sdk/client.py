@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -20,7 +20,7 @@ class OpenForgeClient:
         self._ids = itertools.count(1)
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
 
-    async def __aenter__(self) -> "OpenForgeClient":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *_: object) -> None:
