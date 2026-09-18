@@ -3,7 +3,7 @@ name: Normalize Source
 on:
   push:
     branches:
-      - build/production-openforge-v1
+      - "build/**"
 
 permissions:
   contents: write
@@ -15,12 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: build/production-openforge-v1
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85.0"
+          toolchain: "1.88.0"
           components: rustfmt
 
       - uses: actions/setup-python@v5
@@ -37,14 +37,15 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Normalize checked-in sources
+      - name: Normalize checked-in sources and dependency locks
         run: |
           cargo fmt --all
+          cargo generate-lockfile
           ruff check python --fix
           ruff format python
           pnpm install --lockfile-only --no-frozen-lockfile
 
-      - name: Commit normalized source
+      - name: Commit normalized source and lockfiles
         run: |
           if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
             exit 0
@@ -53,4 +54,4 @@ jobs:
           git config user.email "openforge-ci@users.noreply.github.com"
           git add -A
           git commit -m "chore: normalize source and lock dependencies"
-          git push origin HEAD:build/production-openforge-v1
+          git push origin "HEAD:${GITHUB_REF_NAME}"
