@@ -61,6 +61,38 @@ export interface TaskNode {
     max_tool_calls: number;
     max_wall_seconds: number;
   };
+  requirements: {
+    capabilities: Array<
+      | "filesystem_read"
+      | "filesystem_write"
+      | "process"
+      | "network"
+      | "mcp"
+      | "acp"
+      | "database_read"
+      | "database_write"
+      | "secrets"
+      | "cloud_read"
+      | "cloud_write"
+      | "deployment"
+      | "browser"
+      | "git_read"
+      | "git_write"
+    >;
+    resources: {
+      cpu_cores: number;
+      memory_mb: number;
+      disk_mb: number;
+      pids: number;
+      wall_seconds: number;
+      max_stdout_bytes: number;
+      max_stderr_bytes: number;
+    };
+    preferred_languages: string[];
+    required_reviews: string[];
+    exclusive_resources: string[];
+  };
+  acceptance: Array<{ argv: string[]; timeout_seconds: number }>;
   created_at: string;
   updated_at: string;
 }
