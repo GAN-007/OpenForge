@@ -34,11 +34,20 @@ impl BrowserClient {
         args: &[String],
         request_timeout: Duration,
     ) -> Result<Self> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .env_clear();
+        for key in ["PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let mut child = command
             .spawn()
             .with_context(|| format!("spawn browser worker {program}"))?;
 
