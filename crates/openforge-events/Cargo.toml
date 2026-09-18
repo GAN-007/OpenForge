@@ -1,0 +1,13 @@
+[package]
+name = "openforge-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+openforge-protocol = { path = "../openforge-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
