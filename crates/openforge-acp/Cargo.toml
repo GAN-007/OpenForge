@@ -1,0 +1,9 @@
+[package]
+name="openforge-acp"
+version.workspace=true
+edition.workspace=true
+license.workspace=true
+[dependencies]
+anyhow.workspace=true
+serde_json.workspace=true
+tokio.workspace=true

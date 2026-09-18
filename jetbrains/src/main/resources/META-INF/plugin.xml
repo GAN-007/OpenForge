@@ -1,0 +1,15 @@
+<idea-plugin>
+  <id>dev.openforge.jetbrains</id>
+  <name>OpenForge</name>
+  <vendor url="https://github.com/GAN-007/OpenForge">OpenForge</vendor>
+  <description>OpenForge AI Engineering OS client for JetBrains IDEs.</description>
+  <depends>com.intellij.modules.platform</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow
+        id="OpenForge"
+        anchor="right"
+        factoryClass="dev.openforge.OpenForgeToolWindowFactory"/>
+    <applicationService
+        serviceImplementation="dev.openforge.OpenForgeService"/>
+  </extensions>
+</idea-plugin>

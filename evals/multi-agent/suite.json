@@ -1,0 +1,20 @@
+{
+  "suite": "multi-agent",
+  "version": 1,
+  "cases": [
+    {
+      "id": "parallel-independent-tasks",
+      "graph": {"A": [], "B": [], "C": ["A", "B"]},
+      "expected": ["A and B runnable together", "C waits for A and B"]
+    },
+    {
+      "id": "cycle-rejection",
+      "graph": {"A": ["B"], "B": ["A"]},
+      "expected": ["planner output rejected before execution"]
+    },
+    {
+      "id": "integration-conflict",
+      "expected": ["cherry-pick aborts", "task fails closed", "user branch untouched"]
+    }
+  ]
+}

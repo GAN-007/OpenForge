@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openforge.dev/schemas/events/event.schema.json",
+  "title": "OpenForge Event",
+  "type": "object",
+  "required": [
+    "event_id",
+    "sequence",
+    "timestamp",
+    "actor",
+    "event_type",
+    "payload",
+    "event_hash"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "format": "uuid"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "run_id": {"type": ["string", "null"], "format": "uuid"},
+    "task_id": {"type": ["string", "null"], "format": "uuid"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "actor": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"type": "string"},
+        "id": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "event_type": {"type": "string", "minLength": 1},
+    "payload": {},
+    "previous_event_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "event_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

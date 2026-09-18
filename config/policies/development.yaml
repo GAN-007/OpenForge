@@ -1,0 +1,72 @@
+autonomy: execute
+filesystem:
+  read:
+    default: allow
+    deny:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/.git/**"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.config/gcloud/**"
+  write:
+    default: ask
+    allow:
+      - "src/**"
+      - "tests/**"
+      - "crates/**"
+      - "packages/**"
+      - "python/**"
+      - "docs/**"
+      - "migrations/**"
+      - "*.md"
+      - "*.toml"
+      - "*.json"
+      - "*.yaml"
+      - "*.yml"
+    deny:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/.git/**"
+process:
+  default: ask
+  allow:
+    - "git status**"
+    - "git diff**"
+    - "cargo check**"
+    - "cargo test**"
+    - "cargo fmt**"
+    - "pnpm test**"
+    - "pnpm build**"
+    - "npm test**"
+    - "pytest**"
+  deny:
+    - "sudo **"
+    - "ssh **"
+    - "git push**"
+    - "terraform apply**"
+    - "kubectl delete**"
+    - "rm -rf /**"
+network:
+  default: ask
+  allow:
+    - "github.com"
+    - "crates.io"
+    - "registry.npmjs.org"
+    - "pypi.org"
+secrets:
+  default: deny
+delegation:
+  default: ask
+  allow:
+    - "architect"
+    - "researcher"
+    - "backend-engineer"
+    - "frontend-engineer"
+    - "database-engineer"
+    - "devops-engineer"
+    - "debugger"
+    - "tester"
+    - "reviewer"
+    - "security-reviewer"
+    - "documentation-engineer"

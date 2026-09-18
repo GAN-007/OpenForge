@@ -1,0 +1,20 @@
+{
+  "suite": "routing",
+  "version": 1,
+  "cases": [
+    {
+      "id": "classification-hard-constraint",
+      "required_classification": "RESTRICTED",
+      "expected": "never choose model configured below RESTRICTED"
+    },
+    {
+      "id": "budget-hard-constraint",
+      "expected": "never choose a model whose estimated call cost exceeds max_cost_usd"
+    },
+    {
+      "id": "vision-hard-constraint",
+      "requires_vision": true,
+      "expected": "never choose a non-vision model"
+    }
+  ]
+}

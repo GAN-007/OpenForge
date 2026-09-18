@@ -1,0 +1,12 @@
+[package]
+name = "openforge-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+globset.workspace = true
+openforge-protocol = { path = "../openforge-protocol" }
+serde.workspace = true
+serde_yaml.workspace = true
