@@ -63,7 +63,7 @@ impl ArtifactStore {
             }
             match fs::rename(&tmp, &object) {
                 Ok(()) => {}
-                Err(error) if object.exists() => {
+                Err(_error) if object.exists() => {
                     let _ = fs::remove_file(&tmp);
                     let existing = fs::read(&object)?;
                     if hex::encode(Sha256::digest(&existing)) != digest {
