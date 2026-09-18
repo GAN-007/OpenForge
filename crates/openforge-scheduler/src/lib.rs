@@ -329,6 +329,7 @@ mod tests {
                 max_tool_calls: 20,
                 max_wall_seconds: 60,
             },
+            requirements: Default::default(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
