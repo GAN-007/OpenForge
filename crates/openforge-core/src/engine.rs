@@ -13,8 +13,9 @@ use openforge_models::{
 };
 use openforge_policy::AgentPolicy;
 use openforge_protocol::{
-    Actor, AutonomyLevel, Budget, ChatMessage, ModelRequest, ModelRequirements,
-    Run, RunStatus, TaskBudget, TaskNode, TaskStatus,
+    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest,
+    ModelRequirements, ResourceLimits, Run, RunStatus, SandboxSecurityProfile,
+    TaskBudget, TaskNode, TaskRequirements, TaskStatus,
 };
 use openforge_sandbox::{
     DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend,
@@ -310,23 +311,30 @@ impl Engine {
                 description: task.description,
                 role: task.role,
                 dependencies,
-                required_reviews: task.required_reviews,
+                required_reviews: task.required_reviews.clone(),
                 acceptance: task
                     .acceptance
                     .into_iter()
                     .map(|argv| openforge_protocol::AcceptanceCommand {
                         argv,
-                        timeout_seconds: 300,
+                        timeout_seconds: task.resources.wall_seconds.min(600).max(1),
                     })
                     .collect(),
                 status: TaskStatus::Pending,
                 attempts: 0,
-                max_attempts: 2,
+                max_attempts: task.max_attempts.max(1),
                 budget: TaskBudget {
                     max_usd: task.max_usd,
-                    max_model_calls: 30,
-                    max_tool_calls: 200,
-                    max_wall_seconds: 2700,
+                    max_model_calls: task.max_model_calls.max(1),
+                    max_tool_calls: task.max_tool_calls.max(1),
+                    max_wall_seconds: task.resources.wall_seconds.max(1),
+                },
+                requirements: TaskRequirements {
+                    capabilities: task.capabilities,
+                    resources: task.resources,
+                    preferred_languages: task.preferred_languages,
+                    required_reviews: task.required_reviews,
+                    exclusive_resources: task.exclusive_resources,
                 },
                 created_at: now,
                 updated_at: now,
@@ -683,8 +691,33 @@ impl Engine {
 
         let workspace = git.create_task_workspace(task.id, base_sha).await?;
         let backend = self.backend(use_docker);
+        let resource_limits = &current.requirements.resources;
+        let network_enabled = current
+            .requirements
+            .capabilities
+            .contains(&CapabilityDomain::Network);
         let lease = backend
-            .create(&workspace.path, SandboxPolicy::default())
+            .create(
+                &workspace.path,
+                SandboxPolicy {
+                    cpus: resource_limits.cpu_cores,
+                    memory_mb: resource_limits.memory_mb,
+                    pids_limit: resource_limits.pids,
+                    network_enabled,
+                    disk_mb: resource_limits.disk_mb,
+                    max_stdout_bytes: resource_limits.max_stdout_bytes,
+                    max_stderr_bytes: resource_limits.max_stderr_bytes,
+                    environment: self.config.environment.clone(),
+                    security: SandboxSecurityProfile {
+                        network_mode: if network_enabled {
+                            "restricted".into()
+                        } else {
+                            "none".into()
+                        },
+                        ..SandboxSecurityProfile::default()
+                    },
+                },
+            )
             .await?;
         let context = self.task_context(&workspace, &current).await?;
 
@@ -921,12 +954,30 @@ struct PlanTask {
     required_reviews: Vec<String>,
     #[serde(default)]
     acceptance: Vec<Vec<String>>,
+    #[serde(default)]
+    capabilities: Vec<CapabilityDomain>,
+    #[serde(default)]
+    resources: ResourceLimits,
+    #[serde(default)]
+    preferred_languages: Vec<String>,
+    #[serde(default)]
+    exclusive_resources: Vec<String>,
+    #[serde(default = "default_task_attempts")]
+    max_attempts: u32,
+    #[serde(default = "default_model_calls")]
+    max_model_calls: u32,
+    #[serde(default = "default_tool_calls")]
+    max_tool_calls: u32,
     max_usd: f64,
 }
 
+fn default_task_attempts() -> u32 { 2 }
+fn default_model_calls() -> u32 { 30 }
+fn default_tool_calls() -> u32 { 200 }
+
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
-{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"max_usd":1.0}]}
+{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }
