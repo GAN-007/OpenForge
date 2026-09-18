@@ -22,7 +22,7 @@ use openforge_symbols::SymbolGraph;
 use openforge_telemetry::TelemetryRegistry;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
     sync::Arc,
