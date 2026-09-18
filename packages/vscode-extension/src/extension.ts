@@ -10,16 +10,26 @@ type Task = {
 class Rpc {
   private id = 0;
 
-  constructor(private base: string) {}
+  constructor(
+    private base: string,
+    private tokenProvider?: () => Thenable<string | undefined>,
+  ) {}
 
   async call<T>(
     method: string,
     params: Record<string, unknown> = {},
     signal?: AbortSignal,
   ): Promise<T> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    const token = await this.tokenProvider?.();
+    if (token) {
+      headers.authorization = "Bearer " + token;
+    }
     const response = await fetch(this.base + "/v1/rpc", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: ++this.id,
@@ -179,7 +189,10 @@ export function activate(context: vscode.ExtensionContext) {
     .getConfiguration("openforge")
     .get<string>("daemonUrl", "http://127.0.0.1:8765");
 
-  const rpc = new Rpc(url);
+  const rpc = new Rpc(
+    url,
+    () => context.secrets.get("openforge.apiToken"),
+  );
   const tasks = new TasksProvider(rpc);
 
   context.subscriptions.push(
@@ -209,6 +222,122 @@ export function activate(context: vscode.ExtensionContext) {
             "OpenForge daemon " +
               capabilities.server_version +
               " connected",
+          );
+        } catch (error) {
+          void vscode.window.showErrorMessage(String(error));
+        }
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "openforge.setApiToken",
+      async () => {
+        const token = await vscode.window.showInputBox({
+          prompt: "OpenForge daemon API token",
+          password: true,
+          ignoreFocusOut: true,
+          placeHolder: "Leave blank to clear the stored token",
+        });
+        if (token === undefined) return;
+        if (token.trim()) {
+          await context.secrets.store("openforge.apiToken", token.trim());
+          void vscode.window.showInformationMessage(
+            "OpenForge API token stored securely for this VS Code profile.",
+          );
+        } else {
+          await context.secrets.delete("openforge.apiToken");
+          void vscode.window.showInformationMessage(
+            "OpenForge API token cleared.",
+          );
+        }
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "openforge.verifyAudit",
+      async () => {
+        try {
+          const report = await rpc.call<{
+            valid: boolean;
+            verified_events: number;
+            violations: string[];
+          }>("event/verify");
+          if (report.valid) {
+            void vscode.window.showInformationMessage(
+              `OpenForge audit chain valid across ${report.verified_events} events.`,
+            );
+          } else {
+            void vscode.window.showErrorMessage(
+              "OpenForge audit chain failed verification: " +
+                report.violations.slice(0, 3).join("; "),
+            );
+          }
+        } catch (error) {
+          void vscode.window.showErrorMessage(String(error));
+        }
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "openforge.searchRepository",
+      async () => {
+        const workspace = vscode.workspace.workspaceFolders?.[0];
+        if (!workspace) {
+          void vscode.window.showWarningMessage(
+            "Open a workspace before searching repository intelligence.",
+          );
+          return;
+        }
+        const query = await vscode.window.showInputBox({
+          prompt: "Search repository content and symbols",
+          placeHolder: "authentication policy scheduler",
+        });
+        if (!query?.trim()) return;
+
+        try {
+          const result = await rpc.call<{
+            hits: Array<{
+              path: string;
+              line: number;
+              snippet: string;
+              score: number;
+            }>;
+          }>("search/query", {
+            repo: workspace.uri.fsPath,
+            query: query.trim(),
+            limit: 50,
+          });
+          const selected = await vscode.window.showQuickPick(
+            result.hits.map((hit) => ({
+              label: `${hit.path}:${hit.line}`,
+              description: `score ${hit.score.toFixed(2)}`,
+              detail: hit.snippet,
+              hit,
+            })),
+            {
+              placeHolder: result.hits.length
+                ? "Select a repository hit"
+                : "No repository hits found",
+              matchOnDescription: true,
+              matchOnDetail: true,
+            },
+          );
+          if (!selected) return;
+          const uri = vscode.Uri.joinPath(workspace.uri, selected.hit.path);
+          const document = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(document);
+          const line = Math.max(0, selected.hit.line - 1);
+          const position = new vscode.Position(line, 0);
+          editor.selection = new vscode.Selection(position, position);
+          editor.revealRange(
+            new vscode.Range(position, position),
+            vscode.TextEditorRevealType.InCenter,
           );
         } catch (error) {
           void vscode.window.showErrorMessage(String(error));
