@@ -26,7 +26,7 @@ class Rpc {
         method,
         params,
       }),
-      signal,
+      signal: signal ?? null,
     });
     const body = (await response.json()) as {
       result?: T;

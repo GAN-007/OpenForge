@@ -27,7 +27,7 @@ export class OpenForgeClient {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-      signal,
+      signal: signal ?? null,
     });
     const body = (await response.json()) as RpcResponse<T>;
     if (!response.ok || body.error) {
