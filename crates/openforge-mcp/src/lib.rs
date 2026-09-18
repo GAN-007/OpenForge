@@ -175,7 +175,7 @@ impl McpStdioClient {
             .get("tools")
             .cloned()
             .context("MCP tools/list response missing tools")?;
-        Ok(serde_json::from_value(tools).context("invalid MCP tool list")?)
+        serde_json::from_value(tools).context("invalid MCP tool list")
     }
 
     pub async fn call_tool(
