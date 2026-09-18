@@ -3,6 +3,8 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
 use openforge_context::RepositoryIndex;
+use openforge_search::SearchIndex;
+use openforge_symbols::SymbolGraph;
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
     AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider,
@@ -18,7 +20,7 @@ use openforge_sandbox::{
     DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend,
     SandboxPolicy,
 };
-use openforge_scheduler::{runnable_tasks, validate_dag};
+use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
 use openforge_store::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -381,8 +383,17 @@ impl Engine {
                 break;
             }
 
-            let runnable = runnable_tasks(&tasks)?;
-            if runnable.is_empty() {
+            let remaining_run_budget =
+                (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
+            let wave = schedule_wave(
+                &tasks,
+                &SchedulerConfig {
+                    max_parallel: self.config.max_parallel_agents.max(1),
+                    max_wave_cost_usd: remaining_run_budget,
+                    retry_failed: true,
+                },
+            )?;
+            if wave.tasks.is_empty() {
                 let failed = tasks
                     .iter()
                     .filter(|task| {
@@ -396,14 +407,32 @@ impl Engine {
                     })
                     .count();
                 bail!(
-                    "run cannot progress; no runnable tasks ({failed} failed, blocked, cancelled, or awaiting approval)"
+                    "run cannot progress; scheduler admitted no tasks ({failed} failed, blocked, cancelled, or awaiting approval; remaining_budget={remaining_run_budget:.4})"
                 );
             }
 
+            self.store.append_event(
+                Some(run.id),
+                None,
+                Actor {
+                    kind: "system".into(),
+                    id: "scheduler".into(),
+                },
+                "scheduler.waveAdmitted",
+                json!({
+                    "tasks": wave.tasks,
+                    "reserved_cost_usd": wave.reserved_cost_usd,
+                    "critical_depth": wave.critical_depth
+                }),
+            )?;
+
             let base_sha = git.workspace_head(&integration).await?;
-            let batch: Vec<TaskNode> = runnable
-                .into_iter()
-                .take(self.config.max_parallel_agents.max(1))
+            let by_id: std::collections::HashMap<Uuid, TaskNode> =
+                tasks.iter().cloned().map(|task| (task.id, task)).collect();
+            let batch: Vec<TaskNode> = wave
+                .tasks
+                .iter()
+                .filter_map(|id| by_id.get(id).cloned())
                 .collect();
 
             let results = join_all(batch.iter().map(|task| {
@@ -779,18 +808,47 @@ impl Engine {
         task: &TaskNode,
     ) -> Result<String> {
         let index = RepositoryIndex::build(&workspace.path)?;
-        let relevant = index.relevant_files(
-            &format!("{} {}", task.title, task.description),
-            24,
-        );
-        let mut output = serde_json::to_string(&index.language_counts)?;
+        let search = SearchIndex::build(&workspace.path)?;
+        let symbols = SymbolGraph::build(&workspace.path)?;
+        let query = format!("{} {}", task.title, task.description);
+
+        let lexical_hits = search.query(&query, 24);
+        let symbol_hits = symbols.search(&query, 24);
+        let mut relevant = index.relevant_files(&query, 24);
+
+        for hit in &lexical_hits {
+            relevant.push(hit.path.clone());
+        }
+        for symbol in &symbol_hits {
+            relevant.push(symbol.path.clone());
+        }
+        relevant.sort();
+        relevant.dedup();
+        relevant.truncate(36);
+
+        let mut output = String::new();
+        output.push_str("REPOSITORY SNAPSHOT\n");
+        output.push_str(&serde_json::to_string(&serde_json::json!({
+            "fingerprint": index.fingerprint,
+            "files": index.files.len(),
+            "total_bytes": index.total_bytes,
+            "total_lines": index.total_lines,
+            "languages": index.language_counts,
+            "search_stats": search.stats(),
+            "symbol_stats": symbols.stats()
+        }))?);
+
+        output.push_str("\n\nLEXICAL HITS\n");
+        output.push_str(&serde_json::to_string(&lexical_hits)?);
+        output.push_str("\n\nSYMBOL HITS\n");
+        output.push_str(&serde_json::to_string(&symbol_hits)?);
 
         for relative in relevant {
             let path = workspace.path.join(&relative);
             if let Ok(text) = tokio::fs::read_to_string(&path).await {
                 let end = text
                     .char_indices()
-                    .nth(12_000)
+                    .nth(16_000)
                     .map(|(index, _)| index)
                     .unwrap_or(text.len());
                 output.push_str(&format!(
