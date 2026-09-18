@@ -46,7 +46,8 @@ function blockedIpv4(address: string): boolean {
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
     return true;
   }
-  const [a, b] = parts;
+  const a = parts[0]!;
+  const b = parts[1]!;
   return (
     a === 0 ||
     a === 10 ||
