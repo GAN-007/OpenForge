@@ -32,7 +32,7 @@ pub fn validate_dag(tasks: &[TaskNode]) -> Result<()> {
     let ids: HashSet<Uuid> = tasks.iter().map(|task| task.id).collect();
 
     for task in tasks {
-        if task.dependencies.iter().any(|dependency| *dependency == task.id) {
+        if task.dependencies.contains(&task.id) {
             bail!("task {} depends on itself", task.id);
         }
 
