@@ -9,6 +9,15 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@openforge/sdk": [
+        "packages/sdk-typescript/src/index.ts"
+      ],
+      "@openforge/ui": [
+        "packages/ui-components/src/index.tsx"
+      ]
+    }
   }
 }
