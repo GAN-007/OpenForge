@@ -1,8 +1,15 @@
 import type {
+  ArtifactDescriptor,
   CapabilitySet,
   EventEnvelope,
+  EventIntegrityReport,
+  RepositoryIndex,
   Run,
+  SearchHit,
+  SymbolGraph,
+  SymbolRecord,
   TaskNode,
+  TelemetrySnapshot,
 } from "./types.js";
 
 interface RpcResponse<T> {
@@ -14,8 +21,14 @@ interface RpcResponse<T> {
 
 export class OpenForgeClient {
   private nextId = 1;
+  readonly apiToken: string | undefined;
 
-  constructor(readonly baseUrl = "http://127.0.0.1:8765") {}
+  constructor(
+    readonly baseUrl = "http://127.0.0.1:8765",
+    apiToken?: string,
+  ) {
+    this.apiToken = apiToken;
+  }
 
   async rpc<T>(
     method: string,
@@ -23,9 +36,16 @@ export class OpenForgeClient {
     signal?: AbortSignal,
   ): Promise<T> {
     const id = this.nextId++;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
+    if (this.apiToken) {
+      headers.authorization = "Bearer " + this.apiToken;
+    }
+
     const response = await fetch(this.baseUrl + "/v1/rpc", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       signal: signal ?? null,
     });
@@ -81,11 +101,16 @@ export class OpenForgeClient {
     return this.rpc<TaskNode[]>("task/list", { run_id: runId });
   }
 
-  listEvents(runId: string, afterSequence = 0) {
+  listEvents(runId: string, afterSequence = 0, limit = 500) {
     return this.rpc<EventEnvelope[]>("event/list", {
       run_id: runId,
       after_sequence: afterSequence,
+      limit,
     });
+  }
+
+  verifyEvents() {
+    return this.rpc<EventIntegrityReport>("event/verify");
   }
 
   getBudget(runId: string) {
@@ -95,11 +120,7 @@ export class OpenForgeClient {
     );
   }
 
-  searchMemory(
-    query: string,
-    scope?: string,
-    limit = 100,
-  ) {
+  searchMemory(query: string, scope?: string, limit = 100) {
     return this.rpc<unknown[]>("memory/search", {
       query,
       scope,
@@ -141,6 +162,72 @@ export class OpenForgeClient {
       params,
       signal,
     );
+  }
+
+  repositoryIndex(repo: string) {
+    return this.rpc<RepositoryIndex>("repository/index", { repo });
+  }
+
+  search(repo: string, query: string, limit = 25) {
+    return this.rpc<{
+      stats: Record<string, number>;
+      hits: SearchHit[];
+    }>("search/query", { repo, query, limit });
+  }
+
+  symbols(repo: string, query: string, limit = 25) {
+    return this.rpc<{
+      stats: Record<string, number>;
+      symbols: SymbolRecord[];
+    }>("symbols/query", { repo, query, limit });
+  }
+
+  symbolGraph(repo: string) {
+    return this.rpc<SymbolGraph>("symbols/graph", { repo });
+  }
+
+  putArtifact(params: {
+    base64: string;
+    media_type?: string;
+    source?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    return this.rpc<ArtifactDescriptor>("artifact/put", params);
+  }
+
+  getArtifact(sha256: string) {
+    return this.rpc<{
+      descriptor: ArtifactDescriptor;
+      base64: string;
+    }>("artifact/get", { sha256 });
+  }
+
+  artifactDescriptor(sha256: string) {
+    return this.rpc<ArtifactDescriptor>("artifact/descriptor", {
+      sha256,
+    });
+  }
+
+  deleteArtifact(sha256: string) {
+    return this.rpc<{ deleted: boolean }>("artifact/delete", {
+      sha256,
+    });
+  }
+
+  evaluatePolicy(params: {
+    policy_path: string;
+    capability: string;
+    subject?: string;
+    argv?: string[];
+  }) {
+    return this.rpc<{ decision: "allow" | "ask" | "deny" }>(
+      "policy/evaluate",
+      params,
+    );
+  }
+
+  telemetry() {
+    return this.rpc<TelemetrySnapshot>("telemetry/snapshot");
   }
 
   providers() {
