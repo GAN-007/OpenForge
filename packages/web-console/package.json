@@ -1,9 +1,24 @@
 {
-  "name":"@openforge/web-console",
-  "version":"0.1.0",
-  "private":true,
-  "type":"module",
-  "scripts":{"dev":"vite","build":"tsc -b && vite build","typecheck":"tsc -b --pretty false"},
-  "dependencies":{"@openforge/sdk":"workspace:*","@openforge/ui":"workspace:*","@vitejs/plugin-react":"^5.0.2","vite":"^7.1.5","typescript":"^5.9.2","react":"^19.1.1","react-dom":"^19.1.1"},
-  "devDependencies":{"@types/react":"^19.1.10","@types/react-dom":"^19.1.7"}
+  "name": "@openforge/web-console",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@openforge/sdk": "workspace:*",
+    "@openforge/ui": "workspace:*",
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.5",
+    "typescript": "^5.9.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7"
+  }
 }
