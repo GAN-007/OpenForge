@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    process::{Child, Command},
+    process::Command,
     time::{timeout, Duration},
 };
 use uuid::Uuid;
@@ -280,7 +280,7 @@ impl SandboxBackend for DockerBackend {
         )
         .await
         {
-            Ok(mut result) => {
+            Ok(result) => {
                 if result.timed_out {
                     let _ = host_command(
                         "docker",
