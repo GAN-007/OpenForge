@@ -10,6 +10,17 @@ use std::{
 };
 use uuid::Uuid;
 
+pub struct CostRecord<'a> {
+    pub run_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub agent_id: Option<&'a str>,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub amount_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -435,18 +446,8 @@ impl Store {
         Ok(events)
     }
 
-    pub fn record_cost(
-        &self,
-        run_id: Uuid,
-        task_id: Option<Uuid>,
-        agent_id: Option<&str>,
-        provider: &str,
-        model: &str,
-        amount_usd: f64,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> Result<()> {
-        if !amount_usd.is_finite() || amount_usd < 0.0 {
+    pub fn record_cost(&self, record: CostRecord<'_>) -> Result<()> {
+        if !record.amount_usd.is_finite() || record.amount_usd < 0.0 {
             anyhow::bail!("invalid cost");
         }
 
@@ -458,14 +459,14 @@ impl Store {
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 Uuid::now_v7().to_string(),
-                run_id.to_string(),
-                task_id.map(|value| value.to_string()),
-                agent_id,
-                provider,
-                model,
-                amount_usd,
-                input_tokens as i64,
-                output_tokens as i64,
+                record.run_id.to_string(),
+                record.task_id.map(|value| value.to_string()),
+                record.agent_id,
+                record.provider,
+                record.model,
+                record.amount_usd,
+                record.input_tokens as i64,
+                record.output_tokens as i64,
                 Utc::now().to_rfc3339()
             ],
         )?;
