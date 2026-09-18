@@ -10,3 +10,4 @@ async-trait.workspace = true
 chrono.workspace = true
 openforge-protocol = { path = "../openforge-protocol" }
 zeroize.workspace = true
+tokio.workspace = true
