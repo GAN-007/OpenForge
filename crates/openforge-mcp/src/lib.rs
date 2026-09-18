@@ -66,7 +66,7 @@ pub struct McpToolCallResult {
     pub content: Vec<Value>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
-    #[serde(default)]
+    #[serde(rename = "structuredContent", default)]
     pub structured_content: Option<Value>,
 }
 
