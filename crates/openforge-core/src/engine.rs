@@ -31,6 +31,17 @@ use std::{
 };
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct CompletionInput {
+    pub run_id: Uuid,
+    pub file_path: String,
+    pub language: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub max_output_tokens: u32,
+    pub max_cost_usd: f64,
+}
+
 pub struct Engine {
     pub config: OpenForgeConfig,
     pub store: Store,
@@ -317,7 +328,7 @@ impl Engine {
                     .into_iter()
                     .map(|argv| openforge_protocol::AcceptanceCommand {
                         argv,
-                        timeout_seconds: task.resources.wall_seconds.min(600).max(1),
+                        timeout_seconds: task.resources.wall_seconds.clamp(1, 600),
                     })
                     .collect(),
                 status: TaskStatus::Pending,
@@ -560,16 +571,16 @@ impl Engine {
         Ok(integration_branch)
     }
 
-    pub async fn completion(
-        &self,
-        run_id: Uuid,
-        file_path: &str,
-        language: &str,
-        prefix: &str,
-        suffix: &str,
-        max_output_tokens: u32,
-        max_cost_usd: f64,
-    ) -> Result<String> {
+    pub async fn completion(&self, input: CompletionInput) -> Result<String> {
+        let CompletionInput {
+            run_id,
+            file_path,
+            language,
+            prefix,
+            suffix,
+            max_output_tokens,
+            max_cost_usd,
+        } = input;
         let run = self.store.get_run(run_id)?.context("run not found")?;
         if max_output_tokens == 0 || max_output_tokens > 2048 {
             bail!("max_output_tokens must be between 1 and 2048");
