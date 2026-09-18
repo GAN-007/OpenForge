@@ -76,15 +76,13 @@ impl AcpAgentClient {
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
         }
-        if !config.environment.is_empty() {
-            command.env_clear();
-            if let Some(path) = std::env::var_os("PATH") {
-                command.env("PATH", path);
-            }
-            for (key, value) in &config.environment {
-                validate_env_key(key)?;
-                command.env(key, value);
-            }
+        command.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
+        for (key, value) in &config.environment {
+            validate_env_key(key)?;
+            command.env(key, value);
         }
 
         let mut child = command
