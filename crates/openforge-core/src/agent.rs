@@ -5,7 +5,7 @@ use openforge_protocol::{
     Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode,
 };
 use openforge_sandbox::{ExecRequest, SandboxBackend, SandboxLease};
-use openforge_store::Store;
+use openforge_store::{CostRecord, Store};
 use crate::ToolBus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -152,16 +152,16 @@ impl AgentLoop {
             }
             task_spend += response.cost_usd;
 
-            self.store.record_cost(
-                task.run_id,
-                Some(task.id),
-                Some(&task.role),
-                &response.provider,
-                &response.model,
-                response.cost_usd,
-                response.input_tokens,
-                response.output_tokens,
-            )?;
+            self.store.record_cost(CostRecord {
+                run_id: task.run_id,
+                task_id: Some(task.id),
+                agent_id: Some(&task.role),
+                provider: &response.provider,
+                model: &response.model,
+                amount_usd: response.cost_usd,
+                input_tokens: response.input_tokens,
+                output_tokens: response.output_tokens,
+            })?;
 
             self.store.append_event(
                 Some(task.run_id),
