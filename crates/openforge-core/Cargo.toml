@@ -13,6 +13,8 @@ openforge-models={path="../openforge-models"}
 openforge-policy={path="../openforge-policy"}
 openforge-protocol={path="../openforge-protocol"}
 openforge-sandbox={path="../openforge-sandbox"}
+openforge-search={path="../openforge-search"}
+openforge-symbols={path="../openforge-symbols"}
 openforge-scheduler={path="../openforge-scheduler"}
 openforge-store={path="../openforge-store"}
 serde.workspace=true
