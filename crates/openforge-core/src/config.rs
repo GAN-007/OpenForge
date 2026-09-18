@@ -47,7 +47,7 @@ impl OpenForgeConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let raw = fs::read_to_string(path.as_ref())
             .with_context(|| format!("read config {}", path.as_ref().display()))?;
-        Ok(serde_yaml::from_str(&raw).context("parse OpenForge config")?)
+        serde_yaml::from_str(&raw).context("parse OpenForge config")
     }
 }
 
