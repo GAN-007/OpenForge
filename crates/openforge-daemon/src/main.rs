@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
-use openforge_core::{Engine, OpenForgeConfig};
+use openforge_core::{CompletionInput, Engine, OpenForgeConfig};
 use openforge_events::verify_event_chain;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
@@ -386,15 +386,15 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .unwrap_or(0.05);
             let insertion = state
                 .engine
-                .completion(
+                .completion(CompletionInput {
                     run_id,
-                    &file_path,
-                    language,
-                    prefix,
-                    suffix,
+                    file_path,
+                    language: language.to_string(),
+                    prefix: prefix.to_string(),
+                    suffix: suffix.to_string(),
                     max_output_tokens,
                     max_cost_usd,
-                )
+                })
                 .await?;
             Ok(json!({"text": insertion}))
         }
