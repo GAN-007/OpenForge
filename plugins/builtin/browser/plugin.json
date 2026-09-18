@@ -1,16 +1,22 @@
 {
-  "schema": "openforge.plugin/v1",
+  "schema": "openforge.plugin/v2",
   "id": "dev.openforge.browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "runtime": "process",
   "entrypoint": "packages/browser-worker/dist/index.js",
-  "api": ">=0.1 <1.0",
+  "api": ">=0.2 <1.0",
   "capabilities": {
     "filesystem": [],
     "network": ["http://*", "https://*"],
     "secrets": [],
     "database": [],
-    "shell": []
+    "shell": [],
+    "mcp": [],
+    "acp": [],
+    "cloud": [],
+    "deployment": [],
+    "browser": ["navigate", "click", "fill", "text", "html", "screenshot", "console"],
+    "git": []
   },
   "contributes": {
     "tools": [
