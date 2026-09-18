@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openforge.dev/schemas/policy/agent-policy.schema.json",
+  "title": "OpenForge Agent Policy v2",
+  "type": "object",
+  "required": ["autonomy"],
+  "$defs": {
+    "rules": {
+      "type": "object",
+      "properties": {
+        "default": {"enum": ["allow", "ask", "deny"]},
+        "allow": {"type": "array", "items": {"type": "string"}},
+        "ask": {"type": "array", "items": {"type": "string"}},
+        "deny": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "autonomy": {"enum": ["observe", "suggest", "edit", "execute", "autonomous"]},
+    "filesystem": {
+      "type": "object",
+      "properties": {
+        "read": {"$ref": "#/$defs/rules"},
+        "write": {"$ref": "#/$defs/rules"}
+      },
+      "additionalProperties": false
+    },
+    "process": {"$ref": "#/$defs/rules"},
+    "network": {"$ref": "#/$defs/rules"},
+    "mcp": {"$ref": "#/$defs/rules"},
+    "acp": {"$ref": "#/$defs/rules"},
+    "database_read": {"$ref": "#/$defs/rules"},
+    "database_write": {"$ref": "#/$defs/rules"},
+    "secrets": {"$ref": "#/$defs/rules"},
+    "cloud_read": {"$ref": "#/$defs/rules"},
+    "cloud_write": {"$ref": "#/$defs/rules"},
+    "deployment": {"$ref": "#/$defs/rules"},
+    "browser": {"$ref": "#/$defs/rules"},
+    "git": {"$ref": "#/$defs/rules"},
+    "delegation": {"$ref": "#/$defs/rules"}
+  },
+  "additionalProperties": false
+}

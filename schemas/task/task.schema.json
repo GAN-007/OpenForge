@@ -1,19 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openforge.dev/schemas/task/task.schema.json",
-  "title": "OpenForge Task Node",
+  "title": "OpenForge Task Node v2",
   "type": "object",
   "required": [
-    "id",
-    "run_id",
-    "title",
-    "description",
-    "role",
-    "dependencies",
-    "status",
-    "attempts",
-    "max_attempts",
-    "budget"
+    "id", "run_id", "title", "description", "role", "dependencies",
+    "status", "attempts", "max_attempts", "budget", "requirements"
   ],
   "properties": {
     "id": {"type": "string", "format": "uuid"},
@@ -26,30 +18,30 @@
       "items": {"type": "string", "format": "uuid"},
       "uniqueItems": true
     },
-    "required_reviews": {"type": "array", "items": {"type": "string"}},
+    "required_reviews": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["argv", "timeout_seconds"],
+        "properties": {
+          "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "timeout_seconds": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      }
+    },
     "status": {
       "enum": [
-        "pending",
-        "ready",
-        "running",
-        "awaiting_approval",
-        "reviewing",
-        "completed",
-        "failed",
-        "cancelled",
-        "blocked"
+        "pending", "ready", "running", "awaiting_approval", "reviewing",
+        "completed", "failed", "cancelled", "blocked"
       ]
     },
     "attempts": {"type": "integer", "minimum": 0},
     "max_attempts": {"type": "integer", "minimum": 1},
     "budget": {
       "type": "object",
-      "required": [
-        "max_usd",
-        "max_model_calls",
-        "max_tool_calls",
-        "max_wall_seconds"
-      ],
+      "required": ["max_usd", "max_model_calls", "max_tool_calls", "max_wall_seconds"],
       "properties": {
         "max_usd": {"type": "number", "minimum": 0},
         "max_model_calls": {"type": "integer", "minimum": 1},
@@ -57,7 +49,46 @@
         "max_wall_seconds": {"type": "integer", "minimum": 1}
       },
       "additionalProperties": false
+    },
+    "requirements": {
+      "type": "object",
+      "required": ["capabilities", "resources", "preferred_languages", "required_reviews", "exclusive_resources"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "filesystem_read", "filesystem_write", "process", "network",
+              "mcp", "acp", "database_read", "database_write", "secrets",
+              "cloud_read", "cloud_write", "deployment", "browser",
+              "git_read", "git_write"
+            ]
+          }
+        },
+        "resources": {
+          "type": "object",
+          "required": [
+            "cpu_cores", "memory_mb", "disk_mb", "pids", "wall_seconds",
+            "max_stdout_bytes", "max_stderr_bytes"
+          ],
+          "properties": {
+            "cpu_cores": {"type": "number", "exclusiveMinimum": 0},
+            "memory_mb": {"type": "integer", "minimum": 128},
+            "disk_mb": {"type": "integer", "minimum": 64},
+            "pids": {"type": "integer", "minimum": 1},
+            "wall_seconds": {"type": "integer", "minimum": 1},
+            "max_stdout_bytes": {"type": "integer", "minimum": 1},
+            "max_stderr_bytes": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "preferred_languages": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "required_reviews": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "exclusive_resources": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

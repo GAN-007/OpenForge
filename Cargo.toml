@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/openforge-protocol",
+  "crates/openforge-events",
   "crates/openforge-store",
   "crates/openforge-policy",
   "crates/openforge-scheduler",
@@ -8,6 +9,11 @@ members = [
   "crates/openforge-sandbox",
   "crates/openforge-git",
   "crates/openforge-context",
+  "crates/openforge-symbols",
+  "crates/openforge-search",
+  "crates/openforge-artifacts",
+  "crates/openforge-telemetry",
+  "crates/openforge-browser",
   "crates/openforge-cost",
   "crates/openforge-secrets",
   "crates/openforge-plugins",
@@ -20,17 +26,18 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["OpenForge Contributors"]
 repository = "https://github.com/GAN-007/OpenForge"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "ws"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = "0.3"
@@ -48,5 +55,6 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 walkdir = "2"
+zeroize = "1.8"

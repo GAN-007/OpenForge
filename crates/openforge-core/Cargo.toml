@@ -7,12 +7,16 @@ license.workspace=true
 anyhow.workspace=true
 chrono.workspace=true
 futures-util.workspace=true
+openforge-browser={path="../openforge-browser"}
 openforge-context={path="../openforge-context"}
 openforge-git={path="../openforge-git"}
+openforge-mcp={path="../openforge-mcp"}
 openforge-models={path="../openforge-models"}
 openforge-policy={path="../openforge-policy"}
 openforge-protocol={path="../openforge-protocol"}
 openforge-sandbox={path="../openforge-sandbox"}
+openforge-search={path="../openforge-search"}
+openforge-symbols={path="../openforge-symbols"}
 openforge-scheduler={path="../openforge-scheduler"}
 openforge-store={path="../openforge-store"}
 serde.workspace=true

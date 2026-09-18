@@ -10,7 +10,7 @@ pub use bedrock_cli::{BedrockCliConfig, BedrockCliProvider};
 pub use fabric::FabricProvider;
 pub use gemini::{GeminiConfig, GeminiProvider};
 pub use openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
-pub use router::{ModelRouter, RoutingWeights};
+pub use router::{ModelRouter, RoutingCandidate, RoutingWeights};
 
 use anyhow::Result;
 use async_trait::async_trait;

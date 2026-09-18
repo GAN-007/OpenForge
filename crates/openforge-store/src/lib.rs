@@ -10,6 +10,17 @@ use std::{
 };
 use uuid::Uuid;
 
+pub struct CostRecord<'a> {
+    pub run_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub agent_id: Option<&'a str>,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub amount_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -253,7 +264,7 @@ impl Store {
             .optional()?;
 
         let timestamp = Utc::now();
-        let event_id = Uuid::new_v4();
+        let event_id = Uuid::now_v7();
         let event_type = event_type.into();
 
         let canonical = serde_json::json!({
@@ -370,18 +381,73 @@ impl Store {
         Ok(events)
     }
 
-    pub fn record_cost(
+    pub fn list_all_events(
         &self,
-        run_id: Uuid,
-        task_id: Option<Uuid>,
-        agent_id: Option<&str>,
-        provider: &str,
-        model: &str,
-        amount_usd: f64,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> Result<()> {
-        if !amount_usd.is_finite() || amount_usd < 0.0 {
+        after_sequence: i64,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT sequence,event_id,run_id,task_id,timestamp,actor_json,event_type,
+                    payload_json,previous_event_hash,event_hash
+             FROM events
+             WHERE sequence>?1
+             ORDER BY sequence
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(
+            params![after_sequence, limit.min(100_000) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (
+                sequence,
+                event_id,
+                run_id,
+                task_id,
+                timestamp,
+                actor,
+                event_type,
+                payload,
+                previous,
+                event_hash,
+            ) = row?;
+
+            events.push(EventEnvelope {
+                event_id: Uuid::parse_str(&event_id)?,
+                sequence,
+                run_id: run_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
+                    .with_timezone(&Utc),
+                actor: serde_json::from_str(&actor)?,
+                event_type,
+                payload: serde_json::from_str(&payload)?,
+                previous_event_hash: previous,
+                event_hash,
+            });
+        }
+        Ok(events)
+    }
+
+    pub fn record_cost(&self, record: CostRecord<'_>) -> Result<()> {
+        if !record.amount_usd.is_finite() || record.amount_usd < 0.0 {
             anyhow::bail!("invalid cost");
         }
 
@@ -392,15 +458,15 @@ impl Store {
                 input_tokens,output_tokens,created_at
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
-                Uuid::new_v4().to_string(),
-                run_id.to_string(),
-                task_id.map(|value| value.to_string()),
-                agent_id,
-                provider,
-                model,
-                amount_usd,
-                input_tokens as i64,
-                output_tokens as i64,
+                Uuid::now_v7().to_string(),
+                record.run_id.to_string(),
+                record.task_id.map(|value| value.to_string()),
+                record.agent_id,
+                record.provider,
+                record.model,
+                record.amount_usd,
+                record.input_tokens as i64,
+                record.output_tokens as i64,
                 Utc::now().to_rfc3339()
             ],
         )?;
@@ -469,7 +535,7 @@ impl Store {
             "SELECT id,scope,project_id,repository_id,key,value_json,created_at,updated_at
              FROM memory
              WHERE (?1 IS NULL OR scope=?1)
-               AND (key LIKE ?2 ESCAPE '\' OR value_json LIKE ?2 ESCAPE '\')
+               AND (key LIKE ?2 ESCAPE '!' OR value_json LIKE ?2 ESCAPE '!')
              ORDER BY updated_at DESC
              LIMIT ?3",
         )?;
@@ -546,9 +612,9 @@ fn validate_memory_scope(scope: &str) -> Result<()> {
 
 fn escape_like(value: &str) -> String {
     value
-        .replace('\', "\\")
-        .replace('%', "\%")
-        .replace('_', "\_")
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_")
 }
 
 #[cfg(test)]
@@ -590,6 +656,39 @@ mod tests {
             Some(first.event_hash.as_str())
         );
         assert_ne!(first.event_hash, second.event_hash);
+    }
+
+    #[test]
+    fn memory_search_treats_wildcards_as_literals() {
+        let store = Store::in_memory().unwrap();
+        store
+            .memory_put(
+                "project",
+                None,
+                Some("repo"),
+                "percent%key",
+                &serde_json::json!({"value": "under_score"}),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .memory_search(Some("project"), "percent%key", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .memory_search(Some("project"), "under_score", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .memory_search(Some("project"), "percentXkey", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

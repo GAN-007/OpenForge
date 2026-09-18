@@ -1,8 +1,10 @@
-use crate::{AgentLoop, OpenForgeConfig};
+use crate::{AgentLoop, OpenForgeConfig, ToolBus};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
 use openforge_context::RepositoryIndex;
+use openforge_search::SearchIndex;
+use openforge_symbols::SymbolGraph;
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
     AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider,
@@ -11,15 +13,16 @@ use openforge_models::{
 };
 use openforge_policy::AgentPolicy;
 use openforge_protocol::{
-    Actor, AutonomyLevel, Budget, ChatMessage, ModelRequest, ModelRequirements,
-    Run, RunStatus, TaskBudget, TaskNode, TaskStatus,
+    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest,
+    ModelRequirements, ResourceLimits, Run, RunStatus, SandboxSecurityProfile,
+    TaskBudget, TaskNode, TaskRequirements, TaskStatus,
 };
 use openforge_sandbox::{
     DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend,
     SandboxPolicy,
 };
-use openforge_scheduler::{runnable_tasks, validate_dag};
-use openforge_store::Store;
+use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
+use openforge_store::{CostRecord, Store};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -27,6 +30,17 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct CompletionInput {
+    pub run_id: Uuid,
+    pub file_path: String,
+    pub language: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub max_output_tokens: u32,
+    pub max_cost_usd: f64,
+}
 
 pub struct Engine {
     pub config: OpenForgeConfig,
@@ -252,16 +266,16 @@ impl Engine {
             bail!("planner exceeded its hard cost budget");
         }
 
-        self.store.record_cost(
-            run.id,
-            None,
-            Some("planner"),
-            &response.provider,
-            &response.model,
-            response.cost_usd,
-            response.input_tokens,
-            response.output_tokens,
-        )?;
+        self.store.record_cost(CostRecord {
+            run_id: run.id,
+            task_id: None,
+            agent_id: Some("planner"),
+            provider: &response.provider,
+            model: &response.model,
+            amount_usd: response.cost_usd,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+        })?;
 
         let plan: Plan = serde_json::from_str(extract_json(&response.text))
             .context("planner returned invalid JSON")?;
@@ -308,23 +322,30 @@ impl Engine {
                 description: task.description,
                 role: task.role,
                 dependencies,
-                required_reviews: task.required_reviews,
+                required_reviews: task.required_reviews.clone(),
                 acceptance: task
                     .acceptance
                     .into_iter()
                     .map(|argv| openforge_protocol::AcceptanceCommand {
                         argv,
-                        timeout_seconds: 300,
+                        timeout_seconds: task.resources.wall_seconds.clamp(1, 600),
                     })
                     .collect(),
                 status: TaskStatus::Pending,
                 attempts: 0,
-                max_attempts: 2,
+                max_attempts: task.max_attempts.max(1),
                 budget: TaskBudget {
                     max_usd: task.max_usd,
-                    max_model_calls: 30,
-                    max_tool_calls: 200,
-                    max_wall_seconds: 2700,
+                    max_model_calls: task.max_model_calls.max(1),
+                    max_tool_calls: task.max_tool_calls.max(1),
+                    max_wall_seconds: task.resources.wall_seconds.max(1),
+                },
+                requirements: TaskRequirements {
+                    capabilities: task.capabilities,
+                    resources: task.resources,
+                    preferred_languages: task.preferred_languages,
+                    required_reviews: task.required_reviews,
+                    exclusive_resources: task.exclusive_resources,
                 },
                 created_at: now,
                 updated_at: now,
@@ -381,8 +402,17 @@ impl Engine {
                 break;
             }
 
-            let runnable = runnable_tasks(&tasks)?;
-            if runnable.is_empty() {
+            let remaining_run_budget =
+                (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
+            let wave = schedule_wave(
+                &tasks,
+                &SchedulerConfig {
+                    max_parallel: self.config.max_parallel_agents.max(1),
+                    max_wave_cost_usd: remaining_run_budget,
+                    retry_failed: true,
+                },
+            )?;
+            if wave.tasks.is_empty() {
                 let failed = tasks
                     .iter()
                     .filter(|task| {
@@ -396,14 +426,32 @@ impl Engine {
                     })
                     .count();
                 bail!(
-                    "run cannot progress; no runnable tasks ({failed} failed, blocked, cancelled, or awaiting approval)"
+                    "run cannot progress; scheduler admitted no tasks ({failed} failed, blocked, cancelled, or awaiting approval; remaining_budget={remaining_run_budget:.4})"
                 );
             }
 
+            self.store.append_event(
+                Some(run.id),
+                None,
+                Actor {
+                    kind: "system".into(),
+                    id: "scheduler".into(),
+                },
+                "scheduler.waveAdmitted",
+                json!({
+                    "tasks": wave.tasks,
+                    "reserved_cost_usd": wave.reserved_cost_usd,
+                    "critical_depth": wave.critical_depth
+                }),
+            )?;
+
             let base_sha = git.workspace_head(&integration).await?;
-            let batch: Vec<TaskNode> = runnable
-                .into_iter()
-                .take(self.config.max_parallel_agents.max(1))
+            let by_id: std::collections::HashMap<Uuid, TaskNode> =
+                tasks.iter().cloned().map(|task| (task.id, task)).collect();
+            let batch: Vec<TaskNode> = wave
+                .tasks
+                .iter()
+                .filter_map(|id| by_id.get(id).cloned())
                 .collect();
 
             let results = join_all(batch.iter().map(|task| {
@@ -422,6 +470,7 @@ impl Engine {
                 let execution = result?;
 
                 if let Some(commit) = &execution.commit {
+                    let pre_integration_sha = git.workspace_head(&integration).await?;
                     let integrated_sha =
                         match git.integrate_commit(&integration, commit).await {
                             Ok(sha) => sha,
@@ -434,12 +483,32 @@ impl Engine {
                             }
                         };
 
-                    self.verify_acceptance(
-                        &integration,
-                        &execution.task,
-                        use_docker,
-                    )
-                    .await?;
+                    if let Err(error) = self
+                        .verify_acceptance(&integration, &execution.task, use_docker)
+                        .await
+                    {
+                        git.reset_hard(&integration, &pre_integration_sha).await?;
+                        let mut failed = task.clone();
+                        failed.status = TaskStatus::Failed;
+                        failed.updated_at = Utc::now();
+                        self.store.upsert_task(&failed)?;
+                        self.store.append_event(
+                            Some(run.id),
+                            Some(task.id),
+                            Actor {
+                                kind: "system".into(),
+                                id: "merge-coordinator".into(),
+                            },
+                            "git.integrationRolledBack",
+                            json!({
+                                "source_commit": commit,
+                                "reverted_to": pre_integration_sha,
+                                "failed_integration_sha": integrated_sha,
+                                "error": error.to_string()
+                            }),
+                        )?;
+                        return Err(error.context("post-integration acceptance failed"));
+                    }
 
                     self.store.append_event(
                         Some(run.id),
@@ -502,16 +571,16 @@ impl Engine {
         Ok(integration_branch)
     }
 
-    pub async fn completion(
-        &self,
-        run_id: Uuid,
-        file_path: &str,
-        language: &str,
-        prefix: &str,
-        suffix: &str,
-        max_output_tokens: u32,
-        max_cost_usd: f64,
-    ) -> Result<String> {
+    pub async fn completion(&self, input: CompletionInput) -> Result<String> {
+        let CompletionInput {
+            run_id,
+            file_path,
+            language,
+            prefix,
+            suffix,
+            max_output_tokens,
+            max_cost_usd,
+        } = input;
         let run = self.store.get_run(run_id)?.context("run not found")?;
         if max_output_tokens == 0 || max_output_tokens > 2048 {
             bail!("max_output_tokens must be between 1 and 2048");
@@ -571,16 +640,16 @@ impl Engine {
             bail!("run budget exhausted");
         }
 
-        self.store.record_cost(
+        self.store.record_cost(CostRecord {
             run_id,
-            None,
-            Some("autocomplete"),
-            &response.provider,
-            &response.model,
-            response.cost_usd,
-            response.input_tokens,
-            response.output_tokens,
-        )?;
+            task_id: None,
+            agent_id: Some("autocomplete"),
+            provider: &response.provider,
+            model: &response.model,
+            amount_usd: response.cost_usd,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+        })?;
 
         self.store.append_event(
             Some(run_id),
@@ -633,16 +702,46 @@ impl Engine {
 
         let workspace = git.create_task_workspace(task.id, base_sha).await?;
         let backend = self.backend(use_docker);
+        let resource_limits = &current.requirements.resources;
+        let network_enabled = current
+            .requirements
+            .capabilities
+            .contains(&CapabilityDomain::Network);
         let lease = backend
-            .create(&workspace.path, SandboxPolicy::default())
+            .create(
+                &workspace.path,
+                SandboxPolicy {
+                    cpus: resource_limits.cpu_cores,
+                    memory_mb: resource_limits.memory_mb,
+                    pids_limit: resource_limits.pids,
+                    network_enabled,
+                    disk_mb: resource_limits.disk_mb,
+                    max_stdout_bytes: resource_limits.max_stdout_bytes,
+                    max_stderr_bytes: resource_limits.max_stderr_bytes,
+                    environment: self.config.environment.clone(),
+                    security: SandboxSecurityProfile {
+                        network_mode: if network_enabled {
+                            "restricted".into()
+                        } else {
+                            "none".into()
+                        },
+                        ..SandboxSecurityProfile::default()
+                    },
+                },
+            )
             .await?;
         let context = self.task_context(&workspace, &current).await?;
 
+        let tools = Arc::new(ToolBus::new(
+            self.config.mcp_servers.clone(),
+            self.config.browser.clone(),
+        )?);
         let agent = AgentLoop {
             store: self.store.clone(),
             provider: self.fabric.clone(),
             router: ModelRouter::default(),
             sandbox: backend.clone(),
+            tools: tools.clone(),
             policy,
             max_iterations: 30,
         };
@@ -650,9 +749,11 @@ impl Engine {
         let result = agent
             .run(&current, &workspace.path, &lease, context)
             .await;
+        let tool_cleanup = tools.close().await;
 
         let execution = match result {
             Ok(outcome) if outcome.success => {
+                tool_cleanup.context("tool bus cleanup failed")?;
                 self.verify_with_backend(&backend, &lease, &current)
                     .await?;
                 let commit = git
@@ -674,6 +775,13 @@ impl Engine {
                 }
             }
             Ok(outcome) => {
+                if let Err(cleanup_error) = tool_cleanup {
+                    tracing::warn!(
+                        task_id = %task.id,
+                        error = %cleanup_error,
+                        "tool bus cleanup failed after agent failure"
+                    );
+                }
                 current.status = TaskStatus::Failed;
                 current.updated_at = Utc::now();
                 self.store.upsert_task(&current)?;
@@ -682,6 +790,13 @@ impl Engine {
                 bail!("agent reported failure: {}", outcome.summary);
             }
             Err(error) => {
+                if let Err(cleanup_error) = tool_cleanup {
+                    tracing::warn!(
+                        task_id = %task.id,
+                        error = %cleanup_error,
+                        "tool bus cleanup failed after agent error"
+                    );
+                }
                 current.status = if error.to_string().contains("requires approval") {
                     TaskStatus::AwaitingApproval
                 } else {
@@ -779,18 +894,47 @@ impl Engine {
         task: &TaskNode,
     ) -> Result<String> {
         let index = RepositoryIndex::build(&workspace.path)?;
-        let relevant = index.relevant_files(
-            &format!("{} {}", task.title, task.description),
-            24,
-        );
-        let mut output = serde_json::to_string(&index.language_counts)?;
+        let search = SearchIndex::build(&workspace.path)?;
+        let symbols = SymbolGraph::build(&workspace.path)?;
+        let query = format!("{} {}", task.title, task.description);
+
+        let lexical_hits = search.query(&query, 24);
+        let symbol_hits = symbols.search(&query, 24);
+        let mut relevant = index.relevant_files(&query, 24);
+
+        for hit in &lexical_hits {
+            relevant.push(hit.path.clone());
+        }
+        for symbol in &symbol_hits {
+            relevant.push(symbol.path.clone());
+        }
+        relevant.sort();
+        relevant.dedup();
+        relevant.truncate(36);
+
+        let mut output = String::new();
+        output.push_str("REPOSITORY SNAPSHOT\n");
+        output.push_str(&serde_json::to_string(&serde_json::json!({
+            "fingerprint": index.fingerprint,
+            "files": index.files.len(),
+            "total_bytes": index.total_bytes,
+            "total_lines": index.total_lines,
+            "languages": index.language_counts,
+            "search_stats": search.stats(),
+            "symbol_stats": symbols.stats()
+        }))?);
+
+        output.push_str("\n\nLEXICAL HITS\n");
+        output.push_str(&serde_json::to_string(&lexical_hits)?);
+        output.push_str("\n\nSYMBOL HITS\n");
+        output.push_str(&serde_json::to_string(&symbol_hits)?);
 
         for relative in relevant {
             let path = workspace.path.join(&relative);
             if let Ok(text) = tokio::fs::read_to_string(&path).await {
                 let end = text
                     .char_indices()
-                    .nth(12_000)
+                    .nth(16_000)
                     .map(|(index, _)| index)
                     .unwrap_or(text.len());
                 output.push_str(&format!(
@@ -821,12 +965,30 @@ struct PlanTask {
     required_reviews: Vec<String>,
     #[serde(default)]
     acceptance: Vec<Vec<String>>,
+    #[serde(default)]
+    capabilities: Vec<CapabilityDomain>,
+    #[serde(default)]
+    resources: ResourceLimits,
+    #[serde(default)]
+    preferred_languages: Vec<String>,
+    #[serde(default)]
+    exclusive_resources: Vec<String>,
+    #[serde(default = "default_task_attempts")]
+    max_attempts: u32,
+    #[serde(default = "default_model_calls")]
+    max_model_calls: u32,
+    #[serde(default = "default_tool_calls")]
+    max_tool_calls: u32,
     max_usd: f64,
 }
 
+fn default_task_attempts() -> u32 { 2 }
+fn default_model_calls() -> u32 { 30 }
+fn default_tool_calls() -> u32 { 200 }
+
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
-{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"max_usd":1.0}]}
+{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }

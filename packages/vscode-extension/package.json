@@ -2,25 +2,62 @@
   "name": "openforge-vscode",
   "displayName": "OpenForge",
   "description": "OpenForge AI Engineering OS client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "openforge",
-  "engines": {"vscode": "^1.100.0"},
-  "categories": ["Other", "Machine Learning"],
-  "activationEvents": ["onStartupFinished"],
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      {"command": "openforge.connect", "title": "OpenForge: Connect to Daemon"},
-      {"command": "openforge.inspectRun", "title": "OpenForge: Inspect Run"},
-      {"command": "openforge.refresh", "title": "OpenForge: Refresh"}
+      {
+        "command": "openforge.connect",
+        "title": "OpenForge: Connect to Daemon"
+      },
+      {
+        "command": "openforge.setApiToken",
+        "title": "OpenForge: Set API Token"
+      },
+      {
+        "command": "openforge.inspectRun",
+        "title": "OpenForge: Inspect Run"
+      },
+      {
+        "command": "openforge.verifyAudit",
+        "title": "OpenForge: Verify Audit Chain"
+      },
+      {
+        "command": "openforge.searchRepository",
+        "title": "OpenForge: Search Repository Intelligence"
+      },
+      {
+        "command": "openforge.refresh",
+        "title": "OpenForge: Refresh"
+      }
     ],
     "viewsContainers": {
       "activitybar": [
-        {"id": "openforge", "title": "OpenForge", "icon": "media/openforge.svg"}
+        {
+          "id": "openforge",
+          "title": "OpenForge",
+          "icon": "media/openforge.svg"
+        }
       ]
     },
     "views": {
-      "openforge": [{"id": "openforge.tasks", "name": "Tasks"}]
+      "openforge": [
+        {
+          "id": "openforge.tasks",
+          "name": "Tasks"
+        }
+      ]
     },
     "configuration": {
       "title": "OpenForge",

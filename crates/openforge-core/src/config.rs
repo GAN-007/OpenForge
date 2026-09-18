@@ -16,6 +16,10 @@ pub struct OpenForgeConfig {
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    pub browser: BrowserWorkerConfig,
+    #[serde(default)]
     pub environment: BTreeMap<String, String>,
 }
 
@@ -32,6 +36,8 @@ impl Default for OpenForgeConfig {
             worktree_dir: default_worktree_dir(),
             max_parallel_agents: default_parallel(),
             providers: vec![],
+            mcp_servers: vec![],
+            browser: BrowserWorkerConfig::default(),
             environment: BTreeMap::new(),
         }
     }
@@ -41,8 +47,52 @@ impl OpenForgeConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let raw = fs::read_to_string(path.as_ref())
             .with_context(|| format!("read config {}", path.as_ref().display()))?;
-        Ok(serde_yaml::from_str(&raw).context("parse OpenForge config")?)
+        serde_yaml::from_str(&raw).context("parse OpenForge config")
     }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_protocol_bytes")]
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserWorkerConfig {
+    #[serde(default = "default_browser_program")]
+    pub program: String,
+    #[serde(default = "default_browser_args")]
+    pub args: Vec<String>,
+    #[serde(default = "default_browser_timeout")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for BrowserWorkerConfig {
+    fn default() -> Self {
+        Self {
+            program: default_browser_program(),
+            args: default_browser_args(),
+            timeout_seconds: default_browser_timeout(),
+        }
+    }
+}
+
+fn default_mcp_timeout() -> u64 { 60 }
+fn default_protocol_bytes() -> usize { 8 * 1024 * 1024 }
+fn default_browser_timeout() -> u64 { 60 }
+fn default_browser_program() -> String { "node".into() }
+fn default_browser_args() -> Vec<String> {
+    vec!["packages/browser-worker/dist/index.js".into()]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -309,6 +309,7 @@ const DEFAULT_CONFIG: &str = r#"state_db: .openforge/state.db
 artifact_dir: .openforge/artifacts
 worktree_dir: .openforge/worktrees
 max_parallel_agents: 4
+
 providers:
   - name: local
     kind: openai-compatible
@@ -326,13 +327,31 @@ providers:
         quality_score: 0.75
         privacy_score: 1.0
         max_data_classification: RESTRICTED
+
+mcp_servers: []
+
+browser:
+  program: node
+  args:
+    - packages/browser-worker/dist/index.js
+  timeout_seconds: 60
+
+environment: {}
 "#;
 
 const DEFAULT_POLICY: &str = r#"autonomy: execute
+
 filesystem:
   read:
     default: allow
-    deny: ["**/.env", "**/.env.*", "**/.git/**", "~/.ssh/**", "~/.aws/**"]
+    deny:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/.git/**"
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "~/.config/gcloud/**"
+      - "~/.azure/**"
   write:
     default: ask
     allow:
@@ -341,42 +360,113 @@ filesystem:
       - "crates/**"
       - "packages/**"
       - "python/**"
+      - "jetbrains/**"
       - "docs/**"
+      - "schemas/**"
+      - "plugins/**"
       - "migrations/**"
       - "*.md"
       - "*.toml"
       - "*.json"
       - "*.yaml"
       - "*.yml"
-    deny: ["**/.env", "**/.env.*", "**/.git/**"]
+    deny:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/.git/**"
+
 process:
   default: ask
   allow:
     - "git status**"
     - "git diff**"
-    - "cargo test**"
+    - "git log**"
     - "cargo check**"
+    - "cargo test**"
     - "cargo fmt**"
+    - "cargo clippy**"
     - "pnpm test**"
+    - "pnpm typecheck**"
     - "pnpm build**"
     - "npm test**"
     - "pytest**"
+    - "ruff check**"
+    - "mypy**"
   deny:
     - "sudo **"
+    - "su **"
     - "ssh **"
+    - "scp **"
     - "git push**"
+    - "git remote set-url**"
     - "terraform apply**"
+    - "tofu apply**"
     - "kubectl delete**"
+    - "kubectl apply**"
+    - "helm upgrade**"
     - "rm -rf /**"
+
 network:
   default: ask
   allow:
-    - "github.com"
-    - "crates.io"
-    - "registry.npmjs.org"
-    - "pypi.org"
+    - "https://github.com/**"
+    - "https://docs.github.com/**"
+    - "https://crates.io/**"
+    - "https://registry.npmjs.org/**"
+    - "https://pypi.org/**"
+    - "http://127.0.0.1/**"
+    - "http://localhost/**"
+
+mcp:
+  default: ask
+acp:
+  default: ask
+
+database_read:
+  default: ask
+  allow:
+    - "local/**"
+    - "dev/**"
+database_write:
+  default: ask
+  deny:
+    - "prod/**"
+    - "production/**"
+
 secrets:
   default: deny
+
+cloud_read:
+  default: ask
+cloud_write:
+  default: deny
+
+deployment:
+  default: deny
+
+browser:
+  default: ask
+  allow:
+    - "http://127.0.0.1/**"
+    - "http://localhost/**"
+    - "navigate"
+    - "click"
+    - "fill"
+    - "text"
+    - "screenshot"
+
+git:
+  default: ask
+  allow:
+    - "status**"
+    - "diff**"
+    - "log**"
+    - "show**"
+  deny:
+    - "push**"
+    - "remote**"
+    - "config --global**"
+
 delegation:
   default: ask
   allow:

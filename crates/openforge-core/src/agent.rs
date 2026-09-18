@@ -5,7 +5,8 @@ use openforge_protocol::{
     Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode,
 };
 use openforge_sandbox::{ExecRequest, SandboxBackend, SandboxLease};
-use openforge_store::Store;
+use openforge_store::{CostRecord, Store};
+use crate::ToolBus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -23,6 +24,32 @@ pub enum AgentAction {
         argv: Vec<String>,
         cwd: String,
         timeout_seconds: u64,
+    },
+    McpCall {
+        server: String,
+        tool: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+    },
+    BrowserNavigate {
+        url: String,
+        timeout_ms: u64,
+    },
+    BrowserClick {
+        selector: String,
+        timeout_ms: u64,
+    },
+    BrowserFill {
+        selector: String,
+        value: String,
+        timeout_ms: u64,
+    },
+    BrowserText {
+        selector: Option<String>,
+        timeout_ms: u64,
+    },
+    BrowserScreenshot {
+        full_page: bool,
     },
     Finish { success: bool, summary: String },
 }
@@ -45,6 +72,7 @@ pub struct AgentLoop {
     pub provider: Arc<dyn ModelProvider>,
     pub router: ModelRouter,
     pub sandbox: Arc<dyn SandboxBackend>,
+    pub tools: Arc<ToolBus>,
     pub policy: AgentPolicy,
     pub max_iterations: u32,
 }
@@ -79,10 +107,7 @@ impl AgentLoop {
         for iteration in 1..=model_call_limit {
             let remaining_budget = (task.budget.max_usd - task_spend).max(0.0);
             if remaining_budget <= f64::EPSILON {
-                bail!(
-                    "task model budget exhausted after spending {:.6}",
-                    task_spend
-                );
+                bail!("task model budget exhausted after spending {task_spend:.6}");
             }
 
             let request = ModelRequest {
@@ -124,16 +149,16 @@ impl AgentLoop {
             }
             task_spend += response.cost_usd;
 
-            self.store.record_cost(
-                task.run_id,
-                Some(task.id),
-                Some(&task.role),
-                &response.provider,
-                &response.model,
-                response.cost_usd,
-                response.input_tokens,
-                response.output_tokens,
-            )?;
+            self.store.record_cost(CostRecord {
+                run_id: task.run_id,
+                task_id: Some(task.id),
+                agent_id: Some(&task.role),
+                provider: &response.provider,
+                model: &response.model,
+                amount_usd: response.cost_usd,
+                input_tokens: response.input_tokens,
+                output_tokens: response.output_tokens,
+            })?;
 
             self.store.append_event(
                 Some(task.run_id),
@@ -249,6 +274,144 @@ impl AgentLoop {
                         result.exit_code,
                         truncate(&result.stdout, 30_000),
                         truncate(&result.stderr, 30_000)
+                    )
+                }
+                AgentAction::McpCall {
+                    server,
+                    tool,
+                    arguments,
+                } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    let subject = format!("{server}/{tool}");
+                    require(self.policy.evaluate(CapabilityRequest::Mcp(&subject)))?;
+                    let result = self
+                        .tools
+                        .mcp_call(server, tool, arguments.clone())
+                        .await?;
+                    self.store.append_event(
+                        Some(task.run_id),
+                        Some(task.id),
+                        Actor {
+                            kind: "agent".into(),
+                            id: task.role.clone(),
+                        },
+                        "tool.completed",
+                        json!({
+                            "tool": "mcp",
+                            "server": server,
+                            "method": tool
+                        }),
+                    )?;
+                    format!(
+                        "MCP {}\n{}",
+                        subject,
+                        truncate(&serde_json::to_string_pretty(&result)?, 40_000)
+                    )
+                }
+                AgentAction::BrowserNavigate { url, timeout_ms } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    require(self.policy.evaluate(CapabilityRequest::Browser(url)))?;
+                    require(self.policy.evaluate(CapabilityRequest::Network(url)))?;
+                    let result = self.tools.browser_navigate(url, *timeout_ms).await?;
+                    self.store.append_event(
+                        Some(task.run_id),
+                        Some(task.id),
+                        Actor {
+                            kind: "agent".into(),
+                            id: task.role.clone(),
+                        },
+                        "tool.completed",
+                        json!({"tool": "browser.navigate", "url": url}),
+                    )?;
+                    truncate(&serde_json::to_string_pretty(&result)?, 20_000)
+                }
+                AgentAction::BrowserClick {
+                    selector,
+                    timeout_ms,
+                } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    require(self.policy.evaluate(CapabilityRequest::Browser("click")))?;
+                    let result = self.tools.browser_click(selector, *timeout_ms).await?;
+                    self.store.append_event(
+                        Some(task.run_id),
+                        Some(task.id),
+                        Actor {
+                            kind: "agent".into(),
+                            id: task.role.clone(),
+                        },
+                        "tool.completed",
+                        json!({"tool": "browser.click", "selector": selector}),
+                    )?;
+                    truncate(&serde_json::to_string_pretty(&result)?, 20_000)
+                }
+                AgentAction::BrowserFill {
+                    selector,
+                    value,
+                    timeout_ms,
+                } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    require(self.policy.evaluate(CapabilityRequest::Browser("fill")))?;
+                    let result = self
+                        .tools
+                        .browser_fill(selector, value, *timeout_ms)
+                        .await?;
+                    self.store.append_event(
+                        Some(task.run_id),
+                        Some(task.id),
+                        Actor {
+                            kind: "agent".into(),
+                            id: task.role.clone(),
+                        },
+                        "tool.completed",
+                        json!({
+                            "tool": "browser.fill",
+                            "selector": selector,
+                            "value_bytes": value.len()
+                        }),
+                    )?;
+                    serde_json::to_string_pretty(&result)?
+                }
+                AgentAction::BrowserText {
+                    selector,
+                    timeout_ms,
+                } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    require(self.policy.evaluate(CapabilityRequest::Browser("text")))?;
+                    let result = self
+                        .tools
+                        .browser_text(selector.as_deref(), *timeout_ms)
+                        .await?;
+                    truncate(&serde_json::to_string_pretty(&result)?, 40_000)
+                }
+                AgentAction::BrowserScreenshot { full_page } => {
+                    consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
+                    require(self.policy.evaluate(CapabilityRequest::Browser("screenshot")))?;
+                    let result = self.tools.browser_screenshot(*full_page).await?;
+                    let summary = result
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.store.append_event(
+                        Some(task.run_id),
+                        Some(task.id),
+                        Actor {
+                            kind: "agent".into(),
+                            id: task.role.clone(),
+                        },
+                        "tool.completed",
+                        json!({
+                            "tool": "browser.screenshot",
+                            "url": summary,
+                            "full_page": full_page
+                        }),
+                    )?;
+                    let base64_bytes = result
+                        .get("base64")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::len)
+                        .unwrap_or(0);
+                    format!(
+                        "BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}"
                     )
                 }
                 AgentAction::Finish { success, summary } => {
@@ -380,6 +543,12 @@ You must make one concrete, verifiable action at a time and return ONLY JSON mat
 {{"reasoning_summary":"brief factual rationale","action":{{"type":"read_file","path":"..."}}}}
 {{"reasoning_summary":"...","action":{{"type":"write_file","path":"...","content":"complete file contents"}}}}
 {{"reasoning_summary":"...","action":{{"type":"exec","argv":["command","arg"],"cwd":".","timeout_seconds":120}}}}
+{{"reasoning_summary":"...","action":{{"type":"mcp_call","server":"configured-server","tool":"tool-name","arguments":{{}}}}}}
+{{"reasoning_summary":"...","action":{{"type":"browser_navigate","url":"https://app.example","timeout_ms":30000}}}}
+{{"reasoning_summary":"...","action":{{"type":"browser_click","selector":"button[type=submit]","timeout_ms":10000}}}}
+{{"reasoning_summary":"...","action":{{"type":"browser_fill","selector":"input[name=email]","value":"...","timeout_ms":10000}}}}
+{{"reasoning_summary":"...","action":{{"type":"browser_text","selector":"body","timeout_ms":10000}}}}
+{{"reasoning_summary":"...","action":{{"type":"browser_screenshot","full_page":true}}}}
 {{"reasoning_summary":"...","action":{{"type":"finish","success":true,"summary":"verified outcome"}}}}
 Never request secrets, never access outside the workspace, never claim a test passed unless you executed it and observed success, and do not finish while required acceptance checks are failing."#
     )

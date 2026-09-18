@@ -4,7 +4,13 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: &str = "openforge.protocol.v1";
+pub mod ids;
+pub use ids::{
+    AgentInstanceId, ApprovalId, EventId, ModelInvocationId, ProjectId, RunId,
+    SecretLeaseId, SessionId, TaskId, ToolInvocationId,
+};
+
+pub const PROTOCOL_VERSION: &str = "openforge.protocol.v2";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +110,8 @@ pub struct TaskNode {
     pub attempts: u32,
     pub max_attempts: u32,
     pub budget: TaskBudget,
+    #[serde(default)]
+    pub requirements: TaskRequirements,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -252,4 +260,134 @@ pub struct CapabilitySet {
     pub protocol_version: String,
     pub server_version: String,
     pub capabilities: BTreeMap<String, bool>,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    pub cpu_cores: f32,
+    pub memory_mb: u64,
+    pub disk_mb: u64,
+    pub pids: u32,
+    pub wall_seconds: u64,
+    pub max_stdout_bytes: u64,
+    pub max_stderr_bytes: u64,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            cpu_cores: 2.0,
+            memory_mb: 4096,
+            disk_mb: 20_480,
+            pids: 256,
+            wall_seconds: 2700,
+            max_stdout_bytes: 8 * 1024 * 1024,
+            max_stderr_bytes: 8 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskRequirements {
+    #[serde(default)]
+    pub capabilities: Vec<CapabilityDomain>,
+    #[serde(default)]
+    pub resources: ResourceLimits,
+    #[serde(default)]
+    pub preferred_languages: Vec<String>,
+    #[serde(default)]
+    pub required_reviews: Vec<String>,
+    #[serde(default)]
+    pub exclusive_resources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityDomain {
+    FilesystemRead,
+    FilesystemWrite,
+    Process,
+    Network,
+    Mcp,
+    Acp,
+    DatabaseRead,
+    DatabaseWrite,
+    Secrets,
+    CloudRead,
+    CloudWrite,
+    Deployment,
+    Browser,
+    GitRead,
+    GitWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxSecurityProfile {
+    pub read_only_root: bool,
+    pub no_new_privileges: bool,
+    pub drop_all_capabilities: bool,
+    pub seccomp: bool,
+    pub network_mode: String,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub denied_cidrs: Vec<String>,
+    pub run_as_non_root: bool,
+}
+
+impl Default for SandboxSecurityProfile {
+    fn default() -> Self {
+        Self {
+            read_only_root: false,
+            no_new_privileges: true,
+            drop_all_capabilities: true,
+            seccomp: true,
+            network_mode: "none".into(),
+            allowed_hosts: Vec::new(),
+            denied_cidrs: vec![
+                "127.0.0.0/8".into(),
+                "169.254.0.0/16".into(),
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+                "192.168.0.0/16".into(),
+            ],
+            run_as_non_root: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretLeaseDescriptor {
+    pub id: SecretLeaseId,
+    pub secret_name: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub audience: String,
+    pub renewable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactRef {
+    pub sha256: String,
+    pub media_type: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewGate {
+    pub role: String,
+    pub required: bool,
+    pub independent_model_family: bool,
+    pub blocking_severities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionCheckpoint {
+    pub run_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub sequence: i64,
+    pub integration_sha: String,
+    pub created_at: DateTime<Utc>,
+    pub state: Value,
 }
