@@ -611,9 +611,9 @@ fn validate_memory_scope(scope: &str) -> Result<()> {
 
 fn escape_like(value: &str) -> String {
     value
-        .replace('\\\\', "\\\\\\\\")
-        .replace('%', "\\\\%")
-        .replace('_', "\\\\_")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]
