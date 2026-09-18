@@ -110,6 +110,8 @@ pub struct TaskNode {
     pub attempts: u32,
     pub max_attempts: u32,
     pub budget: TaskBudget,
+    #[serde(default)]
+    pub requirements: TaskRequirements,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
