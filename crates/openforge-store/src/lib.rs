@@ -535,7 +535,7 @@ impl Store {
             "SELECT id,scope,project_id,repository_id,key,value_json,created_at,updated_at
              FROM memory
              WHERE (?1 IS NULL OR scope=?1)
-               AND (key LIKE ?2 ESCAPE '\' OR value_json LIKE ?2 ESCAPE '\')
+               AND (key LIKE ?2 ESCAPE '!' OR value_json LIKE ?2 ESCAPE '!')
              ORDER BY updated_at DESC
              LIMIT ?3",
         )?;
@@ -612,9 +612,9 @@ fn validate_memory_scope(scope: &str) -> Result<()> {
 
 fn escape_like(value: &str) -> String {
     value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_")
 }
 
 #[cfg(test)]
@@ -656,6 +656,39 @@ mod tests {
             Some(first.event_hash.as_str())
         );
         assert_ne!(first.event_hash, second.event_hash);
+    }
+
+    #[test]
+    fn memory_search_treats_wildcards_as_literals() {
+        let store = Store::in_memory().unwrap();
+        store
+            .memory_put(
+                "project",
+                None,
+                Some("repo"),
+                "percent%key",
+                &serde_json::json!({"value": "under_score"}),
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .memory_search(Some("project"), "percent%key", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .memory_search(Some("project"), "under_score", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .memory_search(Some("project"), "percentXkey", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
