@@ -104,7 +104,7 @@ impl AgentPolicy {
     pub fn from_yaml(path: impl AsRef<Path>) -> Result<Self> {
         let raw = fs::read_to_string(path.as_ref())
             .with_context(|| format!("read policy {}", path.as_ref().display()))?;
-        Ok(serde_yaml::from_str(&raw).context("parse policy YAML")?)
+        serde_yaml::from_str(&raw).context("parse policy YAML")
     }
 
     pub fn evaluate(&self, request: CapabilityRequest<'_>) -> Decision {
