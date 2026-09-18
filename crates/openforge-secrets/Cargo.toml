@@ -1,8 +1,12 @@
 [package]
-name="openforge-secrets"
-version.workspace=true
-edition.workspace=true
-license.workspace=true
+name = "openforge-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
 [dependencies]
-anyhow.workspace=true
-async-trait.workspace=true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+openforge-protocol = { path = "../openforge-protocol" }
+zeroize.workspace = true
