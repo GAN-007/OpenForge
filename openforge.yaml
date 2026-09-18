@@ -2,6 +2,7 @@ state_db: .openforge/state.db
 artifact_dir: .openforge/artifacts
 worktree_dir: .openforge/worktrees
 max_parallel_agents: 4
+
 providers:
   - name: local
     kind: openai-compatible
@@ -19,3 +20,13 @@ providers:
         quality_score: 0.75
         privacy_score: 1.0
         max_data_classification: RESTRICTED
+
+mcp_servers: []
+
+browser:
+  program: node
+  args:
+    - packages/browser-worker/dist/index.js
+  timeout_seconds: 60
+
+environment: {}
