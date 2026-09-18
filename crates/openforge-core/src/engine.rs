@@ -629,16 +629,16 @@ impl Engine {
             bail!("run budget exhausted");
         }
 
-        self.store.record_cost(
+        self.store.record_cost(CostRecord {
             run_id,
-            None,
-            Some("autocomplete"),
-            &response.provider,
-            &response.model,
-            response.cost_usd,
-            response.input_tokens,
-            response.output_tokens,
-        )?;
+            task_id: None,
+            agent_id: Some("autocomplete"),
+            provider: &response.provider,
+            model: &response.model,
+            amount_usd: response.cost_usd,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+        })?;
 
         self.store.append_event(
             Some(run_id),
