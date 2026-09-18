@@ -107,10 +107,7 @@ impl AgentLoop {
         for iteration in 1..=model_call_limit {
             let remaining_budget = (task.budget.max_usd - task_spend).max(0.0);
             if remaining_budget <= f64::EPSILON {
-                bail!(
-                    "task model budget exhausted after spending {:.6}",
-                    task_spend
-                );
+                bail!("task model budget exhausted after spending {task_spend:.6}");
             }
 
             let request = ModelRequest {
@@ -414,8 +411,7 @@ impl AgentLoop {
                         .map(str::len)
                         .unwrap_or(0);
                     format!(
-                        "BROWSER SCREENSHOT url={} base64_bytes={}",
-                        summary, base64_bytes
+                        "BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}"
                     )
                 }
                 AgentAction::Finish { success, summary } => {
