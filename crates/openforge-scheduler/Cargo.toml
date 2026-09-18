@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
 anyhow.workspace = true
 openforge-protocol = { path = "../openforge-protocol" }
 uuid.workspace = true
+serde.workspace = true
