@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    str::FromStr,
     sync::Arc,
     time::Instant,
 };
