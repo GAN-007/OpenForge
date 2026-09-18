@@ -1,0 +1,18 @@
+{
+  "suite": "repository-understanding",
+  "version": 1,
+  "cases": [
+    {
+      "id": "auth-blast-radius",
+      "task": "Locate the implementation, tests and persistence boundary for authentication.",
+      "required_signals": ["symbol definitions", "imports", "tests", "database relationship"],
+      "failure_conditions": ["invented file", "missing directly referenced test"]
+    },
+    {
+      "id": "configuration-owner",
+      "task": "Identify the source of a runtime configuration value and every deployment surface that overrides it.",
+      "required_signals": ["configuration file", "environment usage", "deployment definition"],
+      "failure_conditions": ["unverified ownership claim"]
+    }
+  ]
+}

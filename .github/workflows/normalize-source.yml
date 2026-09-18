@@ -1,0 +1,56 @@
+name: Normalize Source
+
+on:
+  push:
+    branches:
+      - build/production-openforge-v1
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    if: github.event.head_commit.message != 'chore: normalize source and lock dependencies'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build/production-openforge-v1
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+          components: rustfmt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install ruff
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.15.1"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Normalize checked-in sources
+        run: |
+          cargo fmt --all
+          ruff check python --fix
+          ruff format python
+          pnpm install --lockfile-only --no-frozen-lockfile
+
+      - name: Commit normalized source
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            exit 0
+          fi
+          git config user.name "openforge-ci"
+          git config user.email "openforge-ci@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: normalize source and lock dependencies"
+          git push origin HEAD:build/production-openforge-v1

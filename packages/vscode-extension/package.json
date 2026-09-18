@@ -1,0 +1,61 @@
+{
+  "name": "openforge-vscode",
+  "displayName": "OpenForge",
+  "description": "OpenForge AI Engineering OS client",
+  "version": "0.1.0",
+  "publisher": "openforge",
+  "engines": {"vscode": "^1.100.0"},
+  "categories": ["Other", "Machine Learning"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {"command": "openforge.connect", "title": "OpenForge: Connect to Daemon"},
+      {"command": "openforge.inspectRun", "title": "OpenForge: Inspect Run"},
+      {"command": "openforge.refresh", "title": "OpenForge: Refresh"}
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {"id": "openforge", "title": "OpenForge", "icon": "media/openforge.svg"}
+      ]
+    },
+    "views": {
+      "openforge": [{"id": "openforge.tasks", "name": "Tasks"}]
+    },
+    "configuration": {
+      "title": "OpenForge",
+      "properties": {
+        "openforge.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "OpenForge daemon URL"
+        },
+        "openforge.runId": {
+          "type": "string",
+          "default": "",
+          "description": "Run UUID displayed in the Tasks view and used by inline completion"
+        },
+        "openforge.inlineCompletion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable OpenForge inline completion when a run ID is configured"
+        },
+        "openforge.inlineCompletion.maxCostUsd": {
+          "type": "number",
+          "default": 0.03,
+          "minimum": 0,
+          "description": "Hard per-request cost ceiling for inline completion"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.9.2"
+  }
+}

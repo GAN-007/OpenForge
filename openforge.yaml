@@ -1,0 +1,21 @@
+state_db: .openforge/state.db
+artifact_dir: .openforge/artifacts
+worktree_dir: .openforge/worktrees
+max_parallel_agents: 4
+providers:
+  - name: local
+    kind: openai-compatible
+    base_url: http://127.0.0.1:11434/v1
+    models:
+      - id: qwen3-coder
+        family: qwen
+        context_tokens: 32768
+        tools: false
+        vision: false
+        structured_output: true
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        latency_score: 0.3
+        quality_score: 0.75
+        privacy_score: 1.0
+        max_data_classification: RESTRICTED

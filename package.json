@@ -1,0 +1,13 @@
+{
+  "name": "openforge-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "lint": "pnpm -r --if-present lint",
+    "dev:web": "pnpm --filter @openforge/web-console dev",
+    "dev:desktop": "pnpm --filter @openforge/desktop dev"
+  }
+}
