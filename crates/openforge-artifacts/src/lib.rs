@@ -104,7 +104,7 @@ impl ArtifactStore {
             .with_context(|| format!("read artifact object {}", object.display()))?;
         let calculated = hex::encode(Sha256::digest(&bytes));
         if calculated != digest {
-            bail!("artifact {} failed digest verification", digest);
+            bail!("artifact {digest} failed digest verification");
         }
         Ok(bytes)
     }
