@@ -283,7 +283,7 @@ pub fn dependency_closure(tasks: &[TaskNode], task_id: Uuid) -> Result<Vec<Uuid>
     let by_id: HashMap<Uuid, &TaskNode> =
         tasks.iter().map(|task| (task.id, task)).collect();
     if !by_id.contains_key(&task_id) {
-        bail!("unknown task {}", task_id);
+        bail!("unknown task {task_id}");
     }
 
     let mut stack = vec![task_id];
