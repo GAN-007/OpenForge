@@ -1,4 +1,4 @@
-use crate::{AgentLoop, OpenForgeConfig};
+use crate::{AgentLoop, OpenForgeConfig, ToolBus};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -688,11 +688,16 @@ impl Engine {
             .await?;
         let context = self.task_context(&workspace, &current).await?;
 
+        let tools = Arc::new(ToolBus::new(
+            self.config.mcp_servers.clone(),
+            self.config.browser.clone(),
+        )?);
         let agent = AgentLoop {
             store: self.store.clone(),
             provider: self.fabric.clone(),
             router: ModelRouter::default(),
             sandbox: backend.clone(),
+            tools: tools.clone(),
             policy,
             max_iterations: 30,
         };
@@ -700,9 +705,11 @@ impl Engine {
         let result = agent
             .run(&current, &workspace.path, &lease, context)
             .await;
+        let tool_cleanup = tools.close().await;
 
         let execution = match result {
             Ok(outcome) if outcome.success => {
+                tool_cleanup.context("tool bus cleanup failed")?;
                 self.verify_with_backend(&backend, &lease, &current)
                     .await?;
                 let commit = git
@@ -724,6 +731,13 @@ impl Engine {
                 }
             }
             Ok(outcome) => {
+                if let Err(cleanup_error) = tool_cleanup {
+                    tracing::warn!(
+                        task_id = %task.id,
+                        error = %cleanup_error,
+                        "tool bus cleanup failed after agent failure"
+                    );
+                }
                 current.status = TaskStatus::Failed;
                 current.updated_at = Utc::now();
                 self.store.upsert_task(&current)?;
@@ -732,6 +746,13 @@ impl Engine {
                 bail!("agent reported failure: {}", outcome.summary);
             }
             Err(error) => {
+                if let Err(cleanup_error) = tool_cleanup {
+                    tracing::warn!(
+                        task_id = %task.id,
+                        error = %cleanup_error,
+                        "tool bus cleanup failed after agent error"
+                    );
+                }
                 current.status = if error.to_string().contains("requires approval") {
                     TaskStatus::AwaitingApproval
                 } else {
