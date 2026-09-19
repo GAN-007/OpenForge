@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { createInterface } from "node:readline";
@@ -52,7 +53,7 @@ async function ensureContext(): Promise<BrowserContext> {
 
 async function createPage(target: BrowserContext): Promise<{ id: string; page: Page }> {
   const page = await target.newPage();
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   pages.set(id, page);
   activePageId = id;
   await page.route("**/*", async (route) => {
