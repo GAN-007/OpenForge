@@ -65,7 +65,9 @@ pub struct Engine {
     pub config: OpenForgeConfig,
     pub store: Store,
     pub tool_bus: Arc<ToolBus>,
-    pub acp_clients: tokio::sync::Mutex<std::collections::HashMap<Uuid, AcpAgentClient>>,
+    pub acp_clients: tokio::sync::Mutex<
+        std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<AcpAgentClient>>>,
+    >,
     fabric: Arc<dyn ModelProvider>,
     provider_names: Vec<String>,
 }
