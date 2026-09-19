@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use openforge_browser::BrowserClient;
 use openforge_collab::CollaborationStore;
 use openforge_core::{DebugAdapterConfig, LanguageServerConfig, OpenForgeConfig};
 use openforge_dap::{DapClient, DapProcessConfig};
@@ -14,6 +15,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use tokio::sync::{Mutex, RwLock};
 use url::Url;
@@ -24,6 +26,8 @@ pub struct ServiceHub {
     dap_configs: HashMap<String, DebugAdapterConfig>,
     lsp_sessions: RwLock<HashMap<Uuid, Arc<Mutex<LspClient>>>>,
     dap_sessions: RwLock<HashMap<Uuid, Arc<Mutex<DapClient>>>>,
+    browser_config: openforge_core::BrowserWorkerConfig,
+    browser: Mutex<Option<BrowserClient>>,
     pub terminals: TerminalManager,
     pub workers: WorkerStore,
     pub memory: MemoryStore,
@@ -63,6 +67,8 @@ impl ServiceHub {
             dap_configs,
             lsp_sessions: RwLock::new(HashMap::new()),
             dap_sessions: RwLock::new(HashMap::new()),
+            browser_config: config.browser.clone(),
+            browser: Mutex::new(None),
             terminals: TerminalManager::default(),
             workers: WorkerStore::open(&config.worker_db)?,
             memory: MemoryStore::open(&config.memory_db)?,
@@ -221,6 +227,36 @@ impl ServiceHub {
                 .map_err(|_| anyhow::anyhow!("DAP session is still in use"))?
                 .into_inner();
             client.disconnect(terminate_debuggee).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn browser_request(&self, method: &str, params: Value) -> Result<Value> {
+        let mut guard = self.browser.lock().await;
+        if guard.is_none() {
+            *guard = Some(
+                BrowserClient::spawn(
+                    &self.browser_config.program,
+                    &self.browser_config.args,
+                    Duration::from_secs(self.browser_config.timeout_seconds.max(1)),
+                )
+                .await
+                .context("start persistent browser QA worker")?,
+            );
+        }
+        guard
+            .as_mut()
+            .expect("browser worker initialized")
+            .raw_request(method, params)
+            .await
+    }
+
+    pub async fn close_browser(&self) -> Result<bool> {
+        let client = self.browser.lock().await.take();
+        if let Some(client) = client {
+            client.close().await?;
             Ok(true)
         } else {
             Ok(false)
