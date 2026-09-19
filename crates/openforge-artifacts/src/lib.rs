@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -98,6 +98,133 @@ impl ArtifactStore {
         self.put_bytes(&bytes, media_type, source, metadata)
     }
 
+    pub fn begin_stream(
+        &self,
+        media_type: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Result<String> {
+        let upload_id = uuid::Uuid::now_v7().to_string();
+        let stream_path = self.stream_path(&upload_id)?;
+        let metadata_path = self.stream_metadata_path(&upload_id)?;
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&stream_path)
+            .with_context(|| format!("create artifact stream {}", stream_path.display()))?;
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec(&serde_json::json!({
+                "media_type": media_type.into(),
+                "source": source.into(),
+                "created_at": Utc::now()
+            }))?,
+        )?;
+        Ok(upload_id)
+    }
+
+    pub fn write_stream_chunk(&self, upload_id: &str, bytes: &[u8]) -> Result<()> {
+        const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+        if bytes.len() > MAX_CHUNK_BYTES {
+            bail!("artifact stream chunk exceeds {} bytes", MAX_CHUNK_BYTES);
+        }
+        let path = self.stream_path(upload_id)?;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open artifact stream {}", path.display()))?;
+        file.write_all(bytes)?;
+        Ok(())
+    }
+
+    pub fn commit_stream(
+        &self,
+        upload_id: &str,
+        metadata: BTreeMap<String, Value>,
+    ) -> Result<ArtifactDescriptor> {
+        let stream_path = self.stream_path(upload_id)?;
+        let metadata_path = self.stream_metadata_path(upload_id)?;
+        let stream_metadata: Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("read stream metadata {}", metadata_path.display()))?,
+        )
+        .context("parse artifact stream metadata")?;
+
+        let media_type = stream_metadata
+            .get("media_type")
+            .and_then(Value::as_str)
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let source = stream_metadata
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("rpc-stream")
+            .to_string();
+
+        let mut file = fs::File::open(&stream_path)
+            .with_context(|| format!("open artifact stream {}", stream_path.display()))?;
+        let mut hasher = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            bytes = bytes.saturating_add(read as u64);
+        }
+        let digest = hex::encode(hasher.finalize());
+        let object = self.object_path(&digest)?;
+        if let Some(parent) = object.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if object.exists() {
+            let existing = fs::read(&object)?;
+            if hex::encode(Sha256::digest(&existing)) != digest {
+                bail!("artifact digest collision or corrupted object");
+            }
+            fs::remove_file(&stream_path)?;
+        } else {
+            match fs::rename(&stream_path, &object) {
+                Ok(()) => {}
+                Err(_error) if object.exists() => {
+                    let existing = fs::read(&object)?;
+                    if hex::encode(Sha256::digest(&existing)) != digest {
+                        bail!("artifact digest collision or corrupted object");
+                    }
+                    let _ = fs::remove_file(&stream_path);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let descriptor = ArtifactDescriptor {
+            digest,
+            bytes,
+            media_type,
+            source,
+            created_at: Utc::now(),
+            metadata,
+        };
+        self.write_descriptor(&descriptor)?;
+        let _ = fs::remove_file(metadata_path);
+        Ok(descriptor)
+    }
+
+    pub fn abort_stream(&self, upload_id: &str) -> Result<bool> {
+        let stream_path = self.stream_path(upload_id)?;
+        let metadata_path = self.stream_metadata_path(upload_id)?;
+        let existed = stream_path.exists() || metadata_path.exists();
+        if stream_path.exists() {
+            fs::remove_file(stream_path)?;
+        }
+        if metadata_path.exists() {
+            fs::remove_file(metadata_path)?;
+        }
+        Ok(existed)
+    }
+
     pub fn get(&self, digest: &str) -> Result<Vec<u8>> {
         let object = self.object_path(digest)?;
         let bytes = fs::read(&object)
@@ -153,6 +280,16 @@ impl ArtifactStore {
         Ok(())
     }
 
+    fn stream_path(&self, upload_id: &str) -> Result<PathBuf> {
+        validate_upload_id(upload_id)?;
+        Ok(self.root.join("tmp").join(format!("{upload_id}.stream")))
+    }
+
+    fn stream_metadata_path(&self, upload_id: &str) -> Result<PathBuf> {
+        validate_upload_id(upload_id)?;
+        Ok(self.root.join("tmp").join(format!("{upload_id}.stream.meta.json")))
+    }
+
     fn object_path(&self, digest: &str) -> Result<PathBuf> {
         validate_digest(digest)?;
         Ok(self
@@ -162,6 +299,18 @@ impl ArtifactStore {
             .join(&digest[2..4])
             .join(digest))
     }
+}
+
+fn validate_upload_id(upload_id: &str) -> Result<()> {
+    if upload_id.is_empty()
+        || upload_id.len() > 64
+        || !upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        bail!("invalid upload_id");
+    }
+    Ok(())
 }
 
 fn validate_digest(digest: &str) -> Result<()> {
@@ -174,6 +323,22 @@ fn validate_digest(digest: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_uploads_are_content_addressed_without_buffering_the_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "openforge-artifacts-stream-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = ArtifactStore::open(&root).unwrap();
+        let upload = store.begin_stream("text/plain", "test-stream").unwrap();
+        store.write_stream_chunk(&upload, b"open").unwrap();
+        store.write_stream_chunk(&upload, b"forge").unwrap();
+        let descriptor = store.commit_stream(&upload, BTreeMap::new()).unwrap();
+        assert_eq!(store.get(&descriptor.digest).unwrap(), b"openforge");
+        assert_eq!(descriptor.bytes, 9);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn stores_and_verifies_content_addressed_bytes() {
