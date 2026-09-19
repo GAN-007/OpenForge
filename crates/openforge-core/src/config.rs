@@ -118,7 +118,12 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub base_url: String,
     pub api_key_env: Option<String>,
+    pub access_token_env: Option<String>,
     pub region: Option<String>,
+    pub location: Option<String>,
+    pub project: Option<String>,
+    pub deployment: Option<String>,
+    pub api_version: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     pub models: Vec<ModelConfig>,
