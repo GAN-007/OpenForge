@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 use tree_sitter::{Language, Node, Parser};
@@ -540,7 +540,6 @@ fn is_import_node(kind: &str) -> bool {
         "use_declaration"
             | "import_statement"
             | "import_from_statement"
-            | "import_statement"
             | "export_statement"
     )
 }
