@@ -103,16 +103,29 @@ struct LoadedPlugin {
 
 pub struct PluginHost {
     root: PathBuf,
+    repository_root: PathBuf,
     manifests: BTreeMap<String, LoadedPlugin>,
 }
 
 impl PluginHost {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&root)?;
+        let requested = root.as_ref().to_path_buf();
+        fs::create_dir_all(&requested)?;
+        let root = requested
+            .canonicalize()
+            .with_context(|| format!("canonicalize plugin root {}", requested.display()))?;
+        let repository_root = root
+            .parent()
+            .unwrap_or(&root)
+            .canonicalize()
+            .with_context(|| format!("canonicalize plugin repository root {}", root.display()))?;
         let mut manifests = BTreeMap::new();
         discover_manifests(&root, &mut manifests)?;
-        Ok(Self { root, manifests })
+        Ok(Self {
+            root,
+            repository_root,
+            manifests,
+        })
     }
 
     pub fn list(&self) -> Vec<PluginManifest> {
@@ -145,9 +158,18 @@ impl PluginHost {
         ];
         for candidate in candidates {
             if candidate.exists() {
-                return candidate
+                let canonical = candidate
                     .canonicalize()
-                    .with_context(|| format!("resolve plugin entrypoint {}", candidate.display()));
+                    .with_context(|| format!("resolve plugin entrypoint {}", candidate.display()))?;
+                if !canonical.starts_with(&self.repository_root) {
+                    bail!(
+                        "plugin {} entrypoint {} escapes repository root {}",
+                        plugin_id,
+                        canonical.display(),
+                        self.repository_root.display()
+                    );
+                }
+                return Ok(canonical);
             }
         }
         bail!(
