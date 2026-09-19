@@ -39,3 +39,4 @@ openforge-terminal = { path = "../openforge-terminal" }
 openforge-workers = { path = "../openforge-workers" }
 serde.workspace = true
 url.workspace = true
+futures-util.workspace = true
