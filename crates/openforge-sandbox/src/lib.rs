@@ -13,6 +13,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxPolicy {
@@ -186,6 +187,19 @@ impl SandboxBackend for DockerBackend {
             bail!("docker daemon unavailable: {}", result.stderr);
         }
 
+        if policy.security.require_rootless {
+            let info = host_command(
+                "docker",
+                &["info", "--format", "{{json .SecurityOptions}}"],
+                Duration::from_secs(15),
+            )
+            .await?;
+            if info.exit_code != 0 || !info.stdout.to_ascii_lowercase().contains("rootless") {
+                bail!("sandbox policy requires a rootless Docker daemon");
+            }
+        }
+        enforce_workspace_quota(&canonical, policy.disk_mb)?;
+
         Ok(SandboxLease {
             id: Uuid::new_v4(),
             backend: self.name().into(),
@@ -202,7 +216,17 @@ impl SandboxBackend for DockerBackend {
             lease.id.simple(),
             Uuid::new_v4().simple()
         );
-        let mount = format!("{}:/workspace:rw", lease.workspace.display());
+        enforce_workspace_quota(&lease.workspace, lease.policy.disk_mb)?;
+        let mount_mode = if lease.policy.security.workspace_read_only {
+            "ro"
+        } else {
+            "rw"
+        };
+        let mount = format!(
+            "{}:/workspace:{}",
+            lease.workspace.display(),
+            mount_mode
+        );
         let memory = format!("{}m", lease.policy.memory_mb);
         let memory_swap = memory.clone();
         let tmp_size = (lease.policy.memory_mb / 4).clamp(64, 1024);
@@ -220,12 +244,6 @@ impl SandboxBackend for DockerBackend {
             memory_swap,
             "--pids-limit".into(),
             lease.policy.pids_limit.to_string(),
-            "--cap-drop".into(),
-            "ALL".into(),
-            "--security-opt".into(),
-            "no-new-privileges:true".into(),
-            "--user".into(),
-            "10001:10001".into(),
             "--tmpfs".into(),
             format!("/tmp:rw,nosuid,nodev,size={}m", tmp_size),
             "-v".into(),
@@ -241,13 +259,81 @@ impl SandboxBackend for DockerBackend {
         if lease.policy.security.read_only_root {
             arguments.push("--read-only".into());
         }
-
-        if lease.policy.network_enabled {
-            arguments.push("--network".into());
-            arguments.push("bridge".into());
+        if lease.policy.security.drop_all_capabilities {
+            arguments.extend(["--cap-drop".into(), "ALL".into()]);
+        }
+        if lease.policy.security.no_new_privileges {
+            arguments.extend([
+                "--security-opt".into(),
+                "no-new-privileges:true".into(),
+            ]);
+        }
+        if lease.policy.security.seccomp {
+            if let Some(profile) = &lease.policy.security.seccomp_profile {
+                let canonical = Path::new(profile)
+                    .canonicalize()
+                    .with_context(|| format!("seccomp profile {profile} not found"))?;
+                arguments.extend([
+                    "--security-opt".into(),
+                    format!("seccomp={}", canonical.display()),
+                ]);
+            }
         } else {
-            arguments.push("--network".into());
-            arguments.push("none".into());
+            arguments.extend([
+                "--security-opt".into(),
+                "seccomp=unconfined".into(),
+            ]);
+        }
+        if let Some(profile) = &lease.policy.security.apparmor_profile {
+            if profile.trim().is_empty() {
+                bail!("AppArmor profile cannot be empty");
+            }
+            arguments.extend([
+                "--security-opt".into(),
+                format!("apparmor={profile}"),
+            ]);
+        }
+        if lease.policy.security.run_as_non_root {
+            arguments.extend(["--user".into(), "10001:10001".into()]);
+        }
+        if let Some(runtime) = &lease.policy.security.runtime {
+            if !runtime
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+            {
+                bail!("invalid OCI runtime name");
+            }
+            arguments.extend(["--runtime".into(), runtime.clone()]);
+        }
+
+        match lease.policy.security.network_mode.as_str() {
+            "none" | "restricted" => {
+                arguments.extend(["--network".into(), "none".into()]);
+            }
+            "bridge" => {
+                if !lease.policy.security.allowed_hosts.is_empty()
+                    || !lease.policy.security.denied_cidrs.is_empty()
+                {
+                    bail!(
+                        "bridge mode cannot enforce host/CIDR allowlists; use restricted brokered networking"
+                    );
+                }
+                arguments.extend(["--network".into(), "bridge".into()]);
+            }
+            other => bail!("unsupported sandbox network mode {other}"),
+        }
+
+        if lease.policy.network_enabled
+            && lease.policy.security.network_mode == "none"
+        {
+            bail!("task requested network but sandbox network_mode is none");
+        }
+        if lease.policy.security.network_mode == "restricted"
+            && lease.policy.security.allowed_hosts.is_empty()
+            && lease.policy.network_enabled
+        {
+            // Restricted mode intentionally gives the process no raw network.
+            // Network-capable OpenForge tools operate through policy-controlled brokers.
         }
 
         for (key, value) in lease
@@ -289,6 +375,7 @@ impl SandboxBackend for DockerBackend {
                     )
                     .await;
                 }
+                enforce_workspace_quota(&lease.workspace, lease.policy.disk_mb)?;
                 Ok(result)
             }
             Err(error) => {
@@ -418,6 +505,25 @@ fn safe_cwd(workspace: &Path, value: &str) -> Result<PathBuf> {
         bail!("cwd escapes workspace");
     }
     Ok(canonical)
+}
+
+fn enforce_workspace_quota(workspace: &Path, disk_mb: u64) -> Result<()> {
+    let limit = disk_mb.saturating_mul(1024 * 1024);
+    let mut used = 0u64;
+    for entry in WalkDir::new(workspace).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            used = used.saturating_add(entry.metadata()?.len());
+            if used > limit {
+                bail!(
+                    "workspace disk quota exceeded: {} bytes used, {} bytes allowed",
+                    used,
+                    limit
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
