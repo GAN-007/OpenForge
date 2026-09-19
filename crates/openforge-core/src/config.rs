@@ -11,6 +11,16 @@ pub struct OpenForgeConfig {
     pub artifact_dir: String,
     #[serde(default = "default_worktree_dir")]
     pub worktree_dir: String,
+    #[serde(default = "default_worker_db")]
+    pub worker_db: String,
+    #[serde(default = "default_memory_db")]
+    pub memory_db: String,
+    #[serde(default = "default_team_db")]
+    pub team_db: String,
+    #[serde(default = "default_collab_db")]
+    pub collab_db: String,
+    #[serde(default = "default_plugin_dir")]
+    pub plugin_dir: String,
     #[serde(default = "default_parallel")]
     pub max_parallel_agents: usize,
     #[serde(default = "default_agent_dir")]
@@ -22,6 +32,10 @@ pub struct OpenForgeConfig {
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
+    pub lsp_servers: Vec<LanguageServerConfig>,
+    #[serde(default)]
+    pub dap_adapters: Vec<DebugAdapterConfig>,
+    #[serde(default)]
     pub browser: BrowserWorkerConfig,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -30,6 +44,11 @@ pub struct OpenForgeConfig {
 fn default_state_db() -> String { ".openforge/state.db".into() }
 fn default_artifact_dir() -> String { ".openforge/artifacts".into() }
 fn default_worktree_dir() -> String { ".openforge/worktrees".into() }
+fn default_worker_db() -> String { ".openforge/workers.db".into() }
+fn default_memory_db() -> String { ".openforge/memory.db".into() }
+fn default_team_db() -> String { ".openforge/team.db".into() }
+fn default_collab_db() -> String { ".openforge/collaboration.db".into() }
+fn default_plugin_dir() -> String { ".openforge/plugins".into() }
 fn default_parallel() -> usize { 4 }
 fn default_agent_dir() -> String { "config/agents".into() }
 
@@ -39,11 +58,18 @@ impl Default for OpenForgeConfig {
             state_db: default_state_db(),
             artifact_dir: default_artifact_dir(),
             worktree_dir: default_worktree_dir(),
+            worker_db: default_worker_db(),
+            memory_db: default_memory_db(),
+            team_db: default_team_db(),
+            collab_db: default_collab_db(),
+            plugin_dir: default_plugin_dir(),
             max_parallel_agents: default_parallel(),
             agent_dir: default_agent_dir(),
             providers: vec![],
             model_profiles: BTreeMap::new(),
             mcp_servers: vec![],
+            lsp_servers: vec![],
+            dap_adapters: vec![],
             browser: BrowserWorkerConfig::default(),
             environment: BTreeMap::new(),
         }
@@ -73,6 +99,46 @@ pub struct McpServerConfig {
     #[serde(default = "default_protocol_bytes")]
     pub max_response_bytes: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanguageServerConfig {
+    pub name: String,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default = "default_lsp_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_protocol_bytes")]
+    pub max_message_bytes: usize,
+    #[serde(default)]
+    pub initialization_options: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugAdapterConfig {
+    pub name: String,
+    pub adapter_id: String,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default = "default_dap_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_protocol_bytes")]
+    pub max_message_bytes: usize,
+}
+
+fn default_lsp_timeout() -> u64 { 30 }
+fn default_dap_timeout() -> u64 { 60 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserWorkerConfig {
