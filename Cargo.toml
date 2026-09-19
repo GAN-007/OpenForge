@@ -19,6 +19,7 @@ members = [
   "crates/openforge-verification",
   "crates/openforge-terminal",
   "crates/openforge-team",
+  "crates/openforge-collab",
   "crates/openforge-memory",
   "crates/openforge-registry",
   "crates/openforge-devtools",
