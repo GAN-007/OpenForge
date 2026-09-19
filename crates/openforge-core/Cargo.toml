@@ -4,6 +4,10 @@ version.workspace=true
 edition.workspace=true
 license.workspace=true
 [dependencies]
+openforge-verification={path="../openforge-verification"}
+openforge-knowledge={path="../openforge-knowledge"}
+openforge-edits={path="../openforge-edits"}
+openforge-agents={path="../openforge-agents"}
 anyhow.workspace=true
 chrono.workspace=true
 futures-util.workspace=true
