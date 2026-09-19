@@ -170,15 +170,10 @@ impl PluginHost {
             .with_context(|| format!("unknown plugin capability domain {domain}"))?;
         if let Some(requested) = requested {
             if !values.iter().any(|declared| declared == requested) {
-                bail!(
-                    "plugin {} does not declare capability {}:{}",
-                    plugin_id,
-                    domain,
-                    requested
-                );
+                bail!("plugin {plugin_id} does not declare capability {domain}:{requested}");
             }
         } else if values.is_empty() {
-            bail!("plugin {} declares no {} capabilities", plugin_id, domain);
+            bail!("plugin {plugin_id} declares no {domain} capabilities");
         }
         Ok(PluginCapabilityDeclaration {
             domain: domain.to_string(),
