@@ -944,6 +944,7 @@ fn authorize_method(auth: &AuthContext, method: &str) -> Result<()> {
         || method.starts_with("thread/")
         || method.starts_with("approval/")
         || method.starts_with("debug/")
+        || method.starts_with("browser/")
         || method.starts_with("database/")
         || method.starts_with("devops/")
         || method.starts_with("edit/")
