@@ -55,9 +55,8 @@ pub struct Engine {
     >,
     pub budget_guards: tokio::sync::Mutex<std::collections::HashMap<Uuid, BudgetGuard>>,
     pub budget_reservations: tokio::sync::Mutex<std::collections::HashMap<Uuid, Reservation>>,
-    pub budget_run_locks: tokio::sync::Mutex<
-        std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>,
-    >,
+    pub budget_run_locks:
+        tokio::sync::Mutex<std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 struct TaskExecution {

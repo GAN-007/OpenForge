@@ -904,7 +904,10 @@ async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGu
     let spent = ledger_spent + reservation_spent;
     let guard = BudgetGuard::with_usage(limits, 0.0, spent, spent, reserved)?;
     let mut guards = state.engine.budget_guards.lock().await;
-    Ok(guards.entry(run_id).or_insert_with(|| guard.clone()).clone())
+    Ok(guards
+        .entry(run_id)
+        .or_insert_with(|| guard.clone())
+        .clone())
 }
 
 async fn budget_run_lock(state: &AppState, run_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
