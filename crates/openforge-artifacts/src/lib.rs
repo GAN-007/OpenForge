@@ -86,6 +86,94 @@ impl ArtifactStore {
         Ok(descriptor)
     }
 
+    pub fn begin_stream(
+        &self,
+        media_type: impl Into<String>,
+        source: impl Into<String>,
+    ) -> Result<String> {
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let stream_path = self.root.join("tmp").join(format!("{upload_id}.stream"));
+        let metadata_path = self
+            .root
+            .join("tmp")
+            .join(format!("{upload_id}.stream.meta.json"));
+
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&stream_path)
+            .with_context(|| format!("create artifact stream {}", stream_path.display()))?;
+        file.sync_all()?;
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec(&serde_json::json!({
+                "media_type": media_type.into(),
+                "source": source.into(),
+                "created_at": Utc::now()
+            }))?,
+        )?;
+        Ok(upload_id)
+    }
+
+    pub fn write_stream_chunk(&self, upload_id: &str, bytes: &[u8]) -> Result<()> {
+        validate_upload_id(upload_id)?;
+        let path = self.root.join("tmp").join(format!("{upload_id}.stream"));
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open artifact stream {}", path.display()))?;
+        file.write_all(bytes)?;
+        Ok(())
+    }
+
+    pub fn commit_stream(
+        &self,
+        upload_id: &str,
+        metadata: BTreeMap<String, Value>,
+    ) -> Result<ArtifactDescriptor> {
+        validate_upload_id(upload_id)?;
+        let stream_path = self.root.join("tmp").join(format!("{upload_id}.stream"));
+        let metadata_path = self
+            .root
+            .join("tmp")
+            .join(format!("{upload_id}.stream.meta.json"));
+        let stream_metadata: Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("read artifact stream metadata {}", metadata_path.display()))?,
+        )?;
+        let bytes = fs::read(&stream_path)
+            .with_context(|| format!("read artifact stream {}", stream_path.display()))?;
+        let media_type = stream_metadata
+            .get("media_type")
+            .and_then(Value::as_str)
+            .unwrap_or("application/octet-stream");
+        let source = stream_metadata
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("rpc-stream");
+        let descriptor = self.put_bytes(&bytes, media_type, source, metadata)?;
+        fs::remove_file(&stream_path)?;
+        fs::remove_file(&metadata_path)?;
+        Ok(descriptor)
+    }
+
+    pub fn abort_stream(&self, upload_id: &str) -> Result<bool> {
+        validate_upload_id(upload_id)?;
+        let stream_path = self.root.join("tmp").join(format!("{upload_id}.stream"));
+        let metadata_path = self
+            .root
+            .join("tmp")
+            .join(format!("{upload_id}.stream.meta.json"));
+        let mut removed = false;
+        for path in [stream_path, metadata_path] {
+            if path.exists() {
+                fs::remove_file(path)?;
+                removed = true;
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn put_file(
         &self,
         path: impl AsRef<Path>,
@@ -162,6 +250,18 @@ impl ArtifactStore {
             .join(&digest[2..4])
             .join(digest))
     }
+}
+
+fn validate_upload_id(upload_id: &str) -> Result<()> {
+    if upload_id.len() != 36
+        || !upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || uuid::Uuid::parse_str(upload_id).is_err()
+    {
+        bail!("invalid artifact upload id");
+    }
+    Ok(())
 }
 
 fn validate_digest(digest: &str) -> Result<()> {
