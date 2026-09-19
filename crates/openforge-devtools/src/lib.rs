@@ -50,7 +50,7 @@ pub async fn run_readonly_command(
         command.env(key, value);
     }
 
-    let mut child = command.spawn().context("spawn developer tool")?;
+    let child = command.spawn().context("spawn developer tool")?;
     match timeout(
         Duration::from_secs(timeout_seconds.max(1)),
         child.wait_with_output(),
@@ -67,7 +67,6 @@ pub async fn run_readonly_command(
             })
         }
         Err(_) => {
-            let _ = child.kill().await;
             Ok(CommandOutput {
                 exit_code: -1,
                 stdout: String::new(),
@@ -288,7 +287,7 @@ fn require_success(name: &str, output: CommandOutput) -> Result<Value> {
                 .filter(|line| !line.trim().is_empty())
                 .map(serde_json::from_str)
                 .collect::<serde_json::Result<Vec<Value>>>()?;
-            Ok(Value::Array(values))
+            Ok::<Value, serde_json::Error>(Value::Array(values))
         })
         .context("parse developer tool JSON output")
 }
