@@ -325,25 +325,38 @@ pub enum CapabilityDomain {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxSecurityProfile {
     pub read_only_root: bool,
+    pub workspace_read_only: bool,
     pub no_new_privileges: bool,
     pub drop_all_capabilities: bool,
     pub seccomp: bool,
+    pub seccomp_profile: Option<String>,
+    pub apparmor_profile: Option<String>,
+    pub require_rootless: bool,
+    pub run_as_non_root: bool,
+    pub runtime: Option<String>,
     pub network_mode: String,
+    pub network_proxy: Option<String>,
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
     #[serde(default)]
     pub denied_cidrs: Vec<String>,
-    pub run_as_non_root: bool,
 }
 
 impl Default for SandboxSecurityProfile {
     fn default() -> Self {
         Self {
-            read_only_root: false,
+            read_only_root: true,
+            workspace_read_only: false,
             no_new_privileges: true,
             drop_all_capabilities: true,
             seccomp: true,
+            seccomp_profile: None,
+            apparmor_profile: None,
+            require_rootless: false,
+            run_as_non_root: true,
+            runtime: None,
             network_mode: "none".into(),
+            network_proxy: None,
             allowed_hosts: Vec::new(),
             denied_cidrs: vec![
                 "127.0.0.0/8".into(),
@@ -352,7 +365,6 @@ impl Default for SandboxSecurityProfile {
                 "172.16.0.0/12".into(),
                 "192.168.0.0/16".into(),
             ],
-            run_as_non_root: true,
         }
     }
 }
