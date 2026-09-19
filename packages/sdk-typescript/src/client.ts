@@ -757,6 +757,51 @@ export class OpenForgeClient {
     return this.rpc<unknown>("plugin/invoke", { id, invocation });
   }
 
+  browserRequest<T>(
+    browserMethod: string,
+    browserParams: Record<string, unknown> = {},
+  ) {
+    return this.rpc<T>("browser/request", {
+      browser_method: browserMethod,
+      browser_params: browserParams,
+    });
+  }
+
+  browserNavigate(url: string, timeoutMs = 30_000) {
+    return this.browserRequest<{ url: string; title: string; page_id?: string }>(
+      "navigate",
+      { url, timeout_ms: timeoutMs },
+    );
+  }
+
+  browserScreenshot(fullPage = true) {
+    return this.browserRequest<{ base64: string; url: string; page_id?: string }>(
+      "screenshot",
+      { full_page: fullPage },
+    );
+  }
+
+  browserNetworkEntries(limit = 1000) {
+    return this.browserRequest<{ entries: unknown[] }>("network/entries", {
+      limit,
+    });
+  }
+
+  browserConsole(limit = 1000) {
+    return this.browserRequest<{ entries: string[] }>("console", { limit });
+  }
+
+  browserAccessibilitySnapshot(selector = "body") {
+    return this.browserRequest<{ snapshot: string }>(
+      "accessibility/snapshot",
+      { selector },
+    );
+  }
+
+  closeBrowser() {
+    return this.rpc<{ closed: boolean }>("browser/close");
+  }
+
   databaseIntrospect(repo: string, connection: unknown) {
     return this.rpc<unknown>("database/introspect", { repo, connection });
   }
