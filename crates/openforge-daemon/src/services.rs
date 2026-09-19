@@ -91,7 +91,7 @@ impl ServiceHub {
         values
     }
 
-    pub async fn start_lsp(&self, name: &str, repo: &Path) -> Result<Uuid> {
+    pub async fn start_lsp(&self, name: &str, repo: &Path) -> Result<(Uuid, Value)> {
         let configured = self
             .lsp_configs
             .get(name)
@@ -115,7 +115,7 @@ impl ServiceHub {
 
         let root_uri = Url::from_directory_path(&repo)
             .map_err(|_| anyhow::anyhow!("repository root cannot be represented as file URI"))?;
-        client
+        let capabilities = client
             .initialize(
                 root_uri.as_str(),
                 "openforge",
@@ -128,7 +128,7 @@ impl ServiceHub {
             .write()
             .await
             .insert(id, Arc::new(Mutex::new(client)));
-        Ok(id)
+        Ok((id, capabilities))
     }
 
     pub async fn lsp_request(
