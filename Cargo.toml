@@ -47,7 +47,7 @@ edition = "2024"
 license = "Apache-2.0"
 authors = ["OpenForge Contributors"]
 repository = "https://github.com/GAN-007/OpenForge"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 anyhow = "1.0"
