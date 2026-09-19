@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
