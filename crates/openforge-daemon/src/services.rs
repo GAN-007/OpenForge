@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use openforge_browser::BrowserClient;
 use openforge_collab::CollaborationStore;
 use openforge_core::{DebugAdapterConfig, LanguageServerConfig, OpenForgeConfig};
@@ -44,7 +44,10 @@ impl ServiceHub {
             if server.name.trim().is_empty() {
                 bail!("language server name cannot be empty");
             }
-            if lsp_configs.insert(server.name.clone(), server.clone()).is_some() {
+            if lsp_configs
+                .insert(server.name.clone(), server.clone())
+                .is_some()
+            {
                 bail!("duplicate language server config {}", server.name);
             }
         }
@@ -141,12 +144,7 @@ impl ServiceHub {
         client.lock().await.request(method, params).await
     }
 
-    pub async fn lsp_notify(
-        &self,
-        session_id: Uuid,
-        method: &str,
-        params: Value,
-    ) -> Result<()> {
+    pub async fn lsp_notify(&self, session_id: Uuid, method: &str, params: Value) -> Result<()> {
         let client = self.lsp_session(session_id).await?;
         client.lock().await.notify(method, params).await
     }
@@ -208,19 +206,12 @@ impl ServiceHub {
         client.lock().await.request(command, arguments).await
     }
 
-    pub async fn dap_events(
-        &self,
-        session_id: Uuid,
-    ) -> Result<Vec<openforge_dap::DapEvent>> {
+    pub async fn dap_events(&self, session_id: Uuid) -> Result<Vec<openforge_dap::DapEvent>> {
         let client = self.dap_session(session_id).await?;
         Ok(client.lock().await.drain_events())
     }
 
-    pub async fn stop_dap(
-        &self,
-        session_id: Uuid,
-        terminate_debuggee: bool,
-    ) -> Result<bool> {
+    pub async fn stop_dap(&self, session_id: Uuid, terminate_debuggee: bool) -> Result<bool> {
         let client = self.dap_sessions.write().await.remove(&session_id);
         if let Some(client) = client {
             let client = Arc::try_unwrap(client)
@@ -286,10 +277,7 @@ impl ServiceHub {
             .with_context(|| format!("unknown debug session {id}"))
     }
 
-    pub async fn update_debug_session(
-        &self,
-        session: DebugSession,
-    ) -> Result<DebugSession> {
+    pub async fn update_debug_session(&self, session: DebugSession) -> Result<DebugSession> {
         if !self.debuggers.read().await.contains_key(&session.id) {
             bail!("unknown debug session {}", session.id);
         }

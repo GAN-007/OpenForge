@@ -4,7 +4,10 @@ mod engine;
 mod tools;
 
 pub use agent::{AgentAction, AgentLoop, AgentOutcome};
-pub use config::{BrowserWorkerConfig, DebugAdapterConfig, LanguageServerConfig, McpServerConfig, ModelConfig, ModelProfileConfig, OpenForgeConfig, ProviderConfig};
+pub use config::{
+    BrowserWorkerConfig, DebugAdapterConfig, LanguageServerConfig, McpServerConfig, ModelConfig,
+    ModelProfileConfig, OpenForgeConfig, ProviderConfig,
+};
 pub use engine::{CompletionInput, Engine};
 
 pub use tools::ToolBus;

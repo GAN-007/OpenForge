@@ -167,15 +167,14 @@ impl KnowledgeGraph {
             );
         }
 
-        let by_name = nodes.iter().fold(
-            HashMap::<String, Vec<String>>::new(),
-            |mut map, node| {
+        let by_name = nodes
+            .iter()
+            .fold(HashMap::<String, Vec<String>>::new(), |mut map, node| {
                 map.entry(node.name.clone())
                     .or_default()
                     .push(node.id.clone());
                 map
-            },
-        );
+            });
 
         for reference in pending {
             if let Some(targets) = by_name.get(&reference.target_name) {
@@ -339,8 +338,7 @@ impl DenseVectorIndex {
             .iter()
             .filter(|entry| entry.vector.len() == vector.len())
             .filter_map(|entry| {
-                cosine_similarity(vector, &entry.vector)
-                    .map(|score| (entry.id.clone(), score))
+                cosine_similarity(vector, &entry.vector).map(|score| (entry.id.clone(), score))
             })
             .collect::<Vec<_>>();
 
@@ -355,10 +353,7 @@ impl DenseVectorIndex {
     }
 }
 
-pub fn reciprocal_rank_fusion(
-    rankings: &[Vec<String>],
-    limit: usize,
-) -> Vec<(String, f64)> {
+pub fn reciprocal_rank_fusion(rankings: &[Vec<String>], limit: usize) -> Vec<(String, f64)> {
     let mut scores = HashMap::<String, f64>::new();
     for ranking in rankings {
         for (index, id) in ranking.iter().enumerate() {
@@ -401,10 +396,7 @@ fn walk_tree(
 
         let start_line = node.start_position().row + 1;
         let end_line = node.end_position().row + 1;
-        let signature = compact_text(
-            node.utf8_text(source).unwrap_or_default(),
-            320,
-        );
+        let signature = compact_text(node.utf8_text(source).unwrap_or_default(), 320);
         let id = symbol_id(path, start_line, node.kind(), &name);
         nodes.push(KnowledgeNode {
             id: id.clone(),
@@ -429,10 +421,7 @@ fn walk_tree(
         if let Ok(text) = node.utf8_text(source) {
             for target in import_targets(text) {
                 pending.push(PendingReference {
-                    source: current_symbol
-                        .as_deref()
-                        .unwrap_or(file_id)
-                        .to_string(),
+                    source: current_symbol.as_deref().unwrap_or(file_id).to_string(),
                     target_name: target,
                     kind: KnowledgeEdgeKind::Imports,
                 });
@@ -454,10 +443,7 @@ fn walk_tree(
                     .to_string();
                 if !target.is_empty() {
                     pending.push(PendingReference {
-                        source: current_symbol
-                            .as_deref()
-                            .unwrap_or(file_id)
-                            .to_string(),
+                        source: current_symbol.as_deref().unwrap_or(file_id).to_string(),
                         target_name: target,
                         kind: KnowledgeEdgeKind::Calls,
                     });
@@ -489,7 +475,12 @@ fn walk_tree(
 }
 
 fn grammar_for(path: &Path) -> Option<Language> {
-    match path.extension().and_then(|value| value.to_str())?.to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
         "py" => Some(tree_sitter_python::LANGUAGE.into()),
         "js" | "jsx" => Some(tree_sitter_javascript::LANGUAGE.into()),
@@ -500,7 +491,12 @@ fn grammar_for(path: &Path) -> Option<Language> {
 }
 
 fn language_for(path: &Path) -> Option<&'static str> {
-    match path.extension().and_then(|value| value.to_str())?.to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "rs" => Some("rust"),
         "py" => Some("python"),
         "js" | "jsx" => Some("javascript"),
@@ -628,10 +624,7 @@ fn symbol_id(path: &str, line: usize, kind: &str, name: &str) -> String {
 }
 
 fn compact_text(value: &str, maximum: usize) -> String {
-    let compact = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() <= maximum {
         return compact;
     }
@@ -681,10 +674,7 @@ mod tests {
     #[test]
     fn reciprocal_rank_fusion_combines_rankings() {
         let combined = reciprocal_rank_fusion(
-            &[
-                vec!["a".into(), "b".into()],
-                vec!["b".into(), "a".into()],
-            ],
+            &[vec!["a".into(), "b".into()], vec!["b".into(), "a".into()]],
             2,
         );
         assert_eq!(combined.len(), 2);

@@ -51,7 +51,10 @@ impl SearchIndex {
                 continue;
             }
             let path = entry.path();
-            if path.components().any(|component| component.as_os_str() == ".git") {
+            if path
+                .components()
+                .any(|component| component.as_os_str() == ".git")
+            {
                 continue;
             }
 
@@ -98,7 +101,10 @@ impl SearchIndex {
         let average_document_length = if documents.is_empty() {
             0.0
         } else {
-            documents.iter().map(|document| document.length).sum::<usize>() as f64
+            documents
+                .iter()
+                .map(|document| document.length)
+                .sum::<usize>() as f64
                 / documents.len() as f64
         };
 
@@ -133,8 +139,7 @@ impl SearchIndex {
                 let df = self.document_frequency.get(term).copied().unwrap_or(0) as f64;
                 let idf = ((total_documents - df + 0.5) / (df + 0.5) + 1.0).ln();
                 let normalization = if self.average_document_length > 0.0 {
-                    1.0 - b
-                        + b * document.length as f64 / self.average_document_length
+                    1.0 - b + b * document.length as f64 / self.average_document_length
                 } else {
                     1.0
                 };
@@ -190,8 +195,7 @@ fn best_snippet(content: &str, terms: &[String]) -> (usize, String) {
 
         let candidate = (matches, index + 1, line.trim().to_string());
         if best.as_ref().is_none_or(|existing| {
-            candidate.0 > existing.0
-                || (candidate.0 == existing.0 && candidate.1 < existing.1)
+            candidate.0 > existing.0 || (candidate.0 == existing.0 && candidate.1 < existing.1)
         }) {
             best = Some(candidate);
         }

@@ -3,42 +3,37 @@ mod services;
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use base64::{
-    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64URL},
     Engine as _,
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64URL},
 };
 use clap::Parser;
+use futures_util::{SinkExt, StreamExt};
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
 use openforge_core::{CompletionInput, Engine, OpenForgeConfig};
 use openforge_events::verify_event_chain;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
-    AutonomyLevel, CapabilitySet, EventEnvelope, RpcError, RpcRequest, RpcResponse,
-    PROTOCOL_VERSION,
+    AutonomyLevel, CapabilitySet, EventEnvelope, PROTOCOL_VERSION, RpcError, RpcRequest,
+    RpcResponse,
 };
 use openforge_search::SearchIndex;
 use openforge_symbols::SymbolGraph;
 use openforge_team::{Permission, Principal};
 use openforge_telemetry::TelemetryRegistry;
+use serde_json::{Value, json};
 use services::ServiceHub;
-use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
@@ -83,7 +78,9 @@ impl AuthContext {
     }
 
     pub(crate) fn workspace_id(&self) -> Option<Uuid> {
-        self.principal.as_ref().map(|principal| principal.workspace_id)
+        self.principal
+            .as_ref()
+            .map(|principal| principal.workspace_id)
     }
 }
 
@@ -91,8 +88,7 @@ impl AuthContext {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -303,10 +299,7 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
                 .store
                 .get_run(run_id)?
                 .context("run not found")?;
-            let tasks = state
-                .engine
-                .plan_run(&repo, &run)
-                .await?;
+            let tasks = state.engine.plan_run(&repo, &run).await?;
             Ok(serde_json::to_value(tasks)?)
         }
         "run/execute" => {
@@ -380,17 +373,11 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
                 .and_then(Value::as_str)
                 .map(Uuid::parse_str)
                 .transpose()?;
-            let repository_id = request
-                .params
-                .get("repository_id")
-                .and_then(Value::as_str);
-            state.engine.store.memory_put(
-                &scope,
-                project_id,
-                repository_id,
-                &key,
-                &value,
-            )?;
+            let repository_id = request.params.get("repository_id").and_then(Value::as_str);
+            state
+                .engine
+                .store
+                .memory_put(&scope, project_id, repository_id, &key, &value)?;
             Ok(json!({"ok": true}))
         }
         "memory/search" => {
@@ -525,12 +512,11 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
                     .unwrap_or_else(|| json!({})),
             )
             .context("artifact metadata must be an object")?;
-            Ok(serde_json::to_value(state.artifacts.put_bytes(
-                &bytes,
-                media_type,
-                source,
-                metadata,
-            )?)?)
+            Ok(serde_json::to_value(
+                state
+                    .artifacts
+                    .put_bytes(&bytes, media_type, source, metadata)?,
+            )?)
         }
         "artifact/get" => {
             let digest = required_string(&request.params, "sha256")?;
@@ -580,11 +566,7 @@ async fn terminal_ws(
     let auth = match authorize_websocket(&state, &headers) {
         Ok(auth) => auth,
         Err(error) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                error.to_string(),
-            )
-                .into_response();
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
         }
     };
     if let Err(error) = auth.require(Permission::Execute) {
@@ -696,11 +678,7 @@ async fn run_events_ws(
     let auth = match authorize_websocket(&state, &headers) {
         Ok(auth) => auth,
         Err(error) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                error.to_string(),
-            )
-                .into_response();
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
         }
     };
     if let Err(error) = auth.require(Permission::Read) {
@@ -709,11 +687,7 @@ async fn run_events_ws(
     let run_id = match Uuid::parse_str(&run_id) {
         Ok(id) => id,
         Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid run id: {error}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("invalid run id: {error}")).into_response();
         }
     };
 
@@ -794,15 +768,8 @@ fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvel
     Ok(events)
 }
 
-fn evaluate_policy(
-    policy: &AgentPolicy,
-    capability: &str,
-    params: &Value,
-) -> Result<String> {
-    let subject = params
-        .get("subject")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+fn evaluate_policy(policy: &AgentPolicy, capability: &str, params: &Value) -> Result<String> {
+    let subject = params.get("subject").and_then(Value::as_str).unwrap_or("");
     let decision = match capability {
         "read_path" => policy.evaluate(CapabilityRequest::ReadPath(subject)),
         "write_path" => policy.evaluate(CapabilityRequest::WritePath(subject)),

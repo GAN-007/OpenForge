@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,14 +92,22 @@ impl DebugSession {
 
     pub fn advance(&mut self, next: DebugPhase) -> Result<()> {
         if !valid_transition(self.phase, next) {
-            bail!("invalid debug phase transition {:?} -> {:?}", self.phase, next);
+            bail!(
+                "invalid debug phase transition {:?} -> {:?}",
+                self.phase,
+                next
+            );
         }
         self.phase = next;
         self.updated_at = Utc::now();
         Ok(())
     }
 
-    pub fn add_hypothesis(&mut self, statement: impl Into<String>, confidence: f32) -> Result<Uuid> {
+    pub fn add_hypothesis(
+        &mut self,
+        statement: impl Into<String>,
+        confidence: f32,
+    ) -> Result<Uuid> {
         if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
             bail!("hypothesis confidence must be between zero and one");
         }
@@ -143,7 +151,11 @@ impl DebugSession {
         observation_id: Uuid,
         supports: bool,
     ) -> Result<()> {
-        if !self.observations.iter().any(|value| value.id == observation_id) {
+        if !self
+            .observations
+            .iter()
+            .any(|value| value.id == observation_id)
+        {
             bail!("unknown debug observation {observation_id}");
         }
         let hypothesis = self
@@ -176,8 +188,7 @@ impl DebugSession {
                 };
                 (
                     hypothesis.id,
-                    (hypothesis.confidence * 0.7 + (evidence_score + 1.0) * 0.15)
-                        .clamp(0.0, 1.0),
+                    (hypothesis.confidence * 0.7 + (evidence_score + 1.0) * 0.15).clamp(0.0, 1.0),
                 )
             })
             .collect::<Vec<_>>();
@@ -203,7 +214,10 @@ impl DebugSession {
         let description = description.into();
         let file = file.into();
         let reversible_patch = reversible_patch.into();
-        if description.trim().is_empty() || file.trim().is_empty() || reversible_patch.trim().is_empty() {
+        if description.trim().is_empty()
+            || file.trim().is_empty()
+            || reversible_patch.trim().is_empty()
+        {
             bail!("debug instrumentation requires description, file and reversible patch");
         }
         let id = Uuid::now_v7();
@@ -243,7 +257,10 @@ impl DebugSession {
 
     pub fn can_complete(&self) -> bool {
         self.selected_hypothesis.is_some()
-            && self.fix_summary.as_deref().is_some_and(|value| !value.trim().is_empty())
+            && self
+                .fix_summary
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
             && self
                 .verification_summary
                 .as_deref()
@@ -285,7 +302,9 @@ mod tests {
         let hypothesis = session.add_hypothesis("null state", 0.7).unwrap();
         session.advance(DebugPhase::Observe).unwrap();
         let observation = session.record_observation("log", "stderr", serde_json::json!("null"));
-        session.attach_evidence(hypothesis, observation, true).unwrap();
+        session
+            .attach_evidence(hypothesis, observation, true)
+            .unwrap();
         assert_eq!(session.ranked_hypotheses()[0].0, hypothesis);
     }
 }

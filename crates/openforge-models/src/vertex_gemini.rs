@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -81,11 +81,7 @@ impl ModelProvider for VertexGeminiProvider {
         &self.cfg.models
     }
 
-    async fn invoke(
-        &self,
-        model: &ModelSpec,
-        request: &ModelRequest,
-    ) -> Result<ModelResponse> {
+    async fn invoke(&self, model: &ModelSpec, request: &ModelRequest) -> Result<ModelResponse> {
         let system = request
             .messages
             .iter()
@@ -119,10 +115,7 @@ impl ModelProvider for VertexGeminiProvider {
         }
 
         let base = self.cfg.base_url.clone().unwrap_or_else(|| {
-            format!(
-                "https://{}-aiplatform.googleapis.com/v1",
-                self.cfg.location
-            )
+            format!("https://{}-aiplatform.googleapis.com/v1", self.cfg.location)
         });
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::{
     process::Command,
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +51,12 @@ pub async fn run_readonly_command(
     }
 
     let mut child = command.spawn().context("spawn developer tool")?;
-    match timeout(Duration::from_secs(timeout_seconds.max(1)), child.wait_with_output()).await {
+    match timeout(
+        Duration::from_secs(timeout_seconds.max(1)),
+        child.wait_with_output(),
+    )
+    .await
+    {
         Ok(output) => {
             let output = output?;
             Ok(CommandOutput {
@@ -161,14 +166,7 @@ pub async fn introspect_database(
         ),
     };
 
-    let output = run_readonly_command(
-        program,
-        &args,
-        cwd,
-        &connection.environment,
-        60,
-    )
-    .await?;
+    let output = run_readonly_command(program, &args, cwd, &connection.environment, 60).await?;
     if output.exit_code != 0 {
         bail!("database introspection failed: {}", output.stderr.trim());
     }
@@ -209,10 +207,7 @@ pub async fn docker_inspect(cwd: impl AsRef<Path>, object: &str) -> Result<Value
     require_success("docker inspect", output)
 }
 
-pub async fn kubernetes_inventory(
-    cwd: impl AsRef<Path>,
-    namespace: Option<&str>,
-) -> Result<Value> {
+pub async fn kubernetes_inventory(cwd: impl AsRef<Path>, namespace: Option<&str>) -> Result<Value> {
     let mut args = vec![
         "get".into(),
         "pods,deployments,statefulsets,services,ingresses,jobs".into(),
@@ -226,8 +221,7 @@ pub async fn kubernetes_inventory(
         args.push("-A".into());
     }
 
-    let output =
-        run_readonly_command("kubectl", &args, cwd, &BTreeMap::new(), 60).await?;
+    let output = run_readonly_command("kubectl", &args, cwd, &BTreeMap::new(), 60).await?;
     require_success("kubectl get", output)
 }
 
@@ -301,9 +295,9 @@ fn require_success(name: &str, output: CommandOutput) -> Result<Value> {
 
 fn validate_resource_name(value: &str) -> Result<()> {
     if value.is_empty()
-        || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || "-_.:/".contains(character)
-        })
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:/".contains(character))
     {
         bail!("invalid resource identifier");
     }

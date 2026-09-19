@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -222,23 +222,27 @@ impl WorkerStore {
             },
         )
         .optional()?
-        .map(|(name, endpoint, capabilities, labels, status, registered_at, last_heartbeat_at)| {
-            Ok(WorkerDescriptor {
-                id: worker_id,
-                name,
-                endpoint,
-                capabilities: serde_json::from_str(&capabilities)?,
-                labels: serde_json::from_str(&labels)?,
-                status: match status.as_str() {
-                    "online" => WorkerStatus::Online,
-                    "draining" => WorkerStatus::Draining,
-                    "offline" => WorkerStatus::Offline,
-                    other => bail!("unknown worker status {other}"),
-                },
-                registered_at: DateTime::parse_from_rfc3339(&registered_at)?.with_timezone(&Utc),
-                last_heartbeat_at: DateTime::parse_from_rfc3339(&last_heartbeat_at)?.with_timezone(&Utc),
-            })
-        })
+        .map(
+            |(name, endpoint, capabilities, labels, status, registered_at, last_heartbeat_at)| {
+                Ok(WorkerDescriptor {
+                    id: worker_id,
+                    name,
+                    endpoint,
+                    capabilities: serde_json::from_str(&capabilities)?,
+                    labels: serde_json::from_str(&labels)?,
+                    status: match status.as_str() {
+                        "online" => WorkerStatus::Online,
+                        "draining" => WorkerStatus::Draining,
+                        "offline" => WorkerStatus::Offline,
+                        other => bail!("unknown worker status {other}"),
+                    },
+                    registered_at: DateTime::parse_from_rfc3339(&registered_at)?
+                        .with_timezone(&Utc),
+                    last_heartbeat_at: DateTime::parse_from_rfc3339(&last_heartbeat_at)?
+                        .with_timezone(&Utc),
+                })
+            },
+        )
         .transpose()
     }
 
@@ -479,7 +483,13 @@ impl WorkerStore {
     }
 
     pub fn complete(&self, job_id: Uuid, lease_token: &str, result: &Value) -> Result<bool> {
-        self.finish(job_id, lease_token, JobStatus::Completed, Some(result), None)
+        self.finish(
+            job_id,
+            lease_token,
+            JobStatus::Completed,
+            Some(result),
+            None,
+        )
     }
 
     pub fn fail(&self, job_id: Uuid, lease_token: &str, error: &str) -> Result<bool> {
@@ -588,11 +598,7 @@ fn parse_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableJob> {
 }
 
 fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Text,
-        Box::new(error),
-    )
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
 #[cfg(test)]
@@ -636,22 +642,19 @@ mod tests {
             store.latest_checkpoint(job.id).unwrap().unwrap().sequence,
             1
         );
-        assert!(store
-            .complete(
-                job.id,
-                &lease.lease_token,
-                &serde_json::json!({"ok": true})
-            )
-            .unwrap());
+        assert!(
+            store
+                .complete(job.id, &lease.lease_token, &serde_json::json!({"ok": true}))
+                .unwrap()
+        );
     }
 }
-
 
 use async_trait::async_trait;
 use std::process::Stdio;
 use tokio::{
     process::Command,
-    time::{timeout, Duration as TokioDuration},
+    time::{Duration as TokioDuration, timeout},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1011,7 +1014,9 @@ async fn run_command(
         process.env(key, value);
     }
 
-    let child = process.spawn().with_context(|| format!("spawn worker command {program}"))?;
+    let child = process
+        .spawn()
+        .with_context(|| format!("spawn worker command {program}"))?;
     match timeout(
         TokioDuration::from_secs(timeout_seconds.clamp(1, 86_400)),
         child.wait_with_output(),
@@ -1089,9 +1094,9 @@ fn validate_resource_name(value: &str) -> Result<()> {
 
 fn validate_host(value: &str) -> Result<()> {
     if value.is_empty()
-        || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || "-_.:".contains(character)
-        })
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:".contains(character))
     {
         bail!("invalid worker host");
     }

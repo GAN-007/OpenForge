@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
@@ -8,7 +8,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +143,12 @@ impl DapClient {
         self.request("threads", json!({})).await
     }
 
-    pub async fn stack_trace(&mut self, thread_id: i64, start_frame: u64, levels: u64) -> Result<Value> {
+    pub async fn stack_trace(
+        &mut self,
+        thread_id: i64,
+        start_frame: u64,
+        levels: u64,
+    ) -> Result<Value> {
         self.request(
             "stackTrace",
             json!({
@@ -194,7 +199,8 @@ impl DapClient {
     }
 
     pub async fn continue_thread(&mut self, thread_id: i64) -> Result<Value> {
-        self.request("continue", json!({"threadId": thread_id})).await
+        self.request("continue", json!({"threadId": thread_id}))
+            .await
     }
 
     pub async fn next(&mut self, thread_id: i64) -> Result<Value> {
@@ -206,7 +212,8 @@ impl DapClient {
     }
 
     pub async fn step_out(&mut self, thread_id: i64) -> Result<Value> {
-        self.request("stepOut", json!({"threadId": thread_id})).await
+        self.request("stepOut", json!({"threadId": thread_id}))
+            .await
     }
 
     pub async fn pause(&mut self, thread_id: i64) -> Result<Value> {

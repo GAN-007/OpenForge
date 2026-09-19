@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -298,7 +298,12 @@ impl CollaborationStore {
         Ok(message)
     }
 
-    pub fn messages(&self, thread_id: Uuid, after_sequence: i64, limit: usize) -> Result<Vec<ThreadMessage>> {
+    pub fn messages(
+        &self,
+        thread_id: Uuid,
+        after_sequence: i64,
+        limit: usize,
+    ) -> Result<Vec<ThreadMessage>> {
         let conn = self.conn.lock().expect("collaboration mutex poisoned");
         let mut statement = conn.prepare(
             "SELECT id,sequence,author_kind,author_id,message_type,content_json,created_at
@@ -375,7 +380,11 @@ impl CollaborationStore {
         Ok(instruction)
     }
 
-    pub fn consume_instructions(&self, thread_id: Uuid, maximum: usize) -> Result<Vec<QueuedInstruction>> {
+    pub fn consume_instructions(
+        &self,
+        thread_id: Uuid,
+        maximum: usize,
+    ) -> Result<Vec<QueuedInstruction>> {
         let mut conn = self.conn.lock().expect("collaboration mutex poisoned");
         let tx = conn.transaction()?;
         let mut statement = tx.prepare(
@@ -524,7 +533,11 @@ impl CollaborationStore {
         Ok(presence)
     }
 
-    pub fn active_presence(&self, workspace_id: Uuid, within_seconds: i64) -> Result<Vec<Presence>> {
+    pub fn active_presence(
+        &self,
+        workspace_id: Uuid,
+        within_seconds: i64,
+    ) -> Result<Vec<Presence>> {
         let cutoff = Utc::now()
             .checked_sub_signed(Duration::seconds(within_seconds.clamp(5, 3600)))
             .expect("valid presence cutoff");
@@ -633,8 +646,10 @@ mod tests {
         let approval = store
             .request_approval(thread.id, "deployment", "prod", "ship release")
             .unwrap();
-        assert!(store
-            .decide_approval(approval.id, ApprovalStatus::ApprovedOnce, "gan")
-            .unwrap());
+        assert!(
+            store
+                .decide_approval(approval.id, ApprovalStatus::ApprovedOnce, "gan")
+                .unwrap()
+        );
     }
 }

@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -132,7 +132,11 @@ impl MemoryStore {
                 input.confidence,
                 input.expires_at.map(|value| value.to_rfc3339()),
                 input.repository_fingerprint,
-                input.embedding.as_ref().map(serde_json::to_string).transpose()?,
+                input
+                    .embedding
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
                 created_at.to_rfc3339(),
                 now.to_rfc3339()
             ],
@@ -185,13 +189,8 @@ impl MemoryStore {
         let mut hits = records
             .into_iter()
             .filter_map(|record| {
-                let haystack = format!(
-                    "{} {} {}",
-                    record.key,
-                    record.provenance,
-                    record.value
-                )
-                .to_lowercase();
+                let haystack =
+                    format!("{} {} {}", record.key, record.provenance, record.value).to_lowercase();
                 let lexical_score = if terms.is_empty() {
                     0.0
                 } else {
@@ -216,8 +215,7 @@ impl MemoryStore {
                 let semantic = semantic_score.unwrap_or(0.0).max(0.0);
                 let freshness = if stale { 0.25 } else { 1.0 };
                 let combined_score =
-                    (0.45 * lexical_score + 0.45 * semantic + 0.10 * record.confidence)
-                        * freshness;
+                    (0.45 * lexical_score + 0.45 * semantic + 0.10 * record.confidence) * freshness;
                 (combined_score > 0.0 || query.is_empty()).then_some(MemoryHit {
                     record,
                     lexical_score,
@@ -336,11 +334,7 @@ fn parse_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
 }
 
 fn sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Text,
-        Box::new(error),
-    )
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> Option<f32> {

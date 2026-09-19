@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
@@ -8,7 +8,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,12 +192,7 @@ impl LspClient {
         .await
     }
 
-    pub async fn did_change(
-        &mut self,
-        uri: &str,
-        version: i64,
-        text: &str,
-    ) -> Result<()> {
+    pub async fn did_change(&mut self, uri: &str, version: i64, text: &str) -> Result<()> {
         self.require_initialized()?;
         self.notify(
             "textDocument/didChange",

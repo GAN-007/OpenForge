@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -89,9 +89,7 @@ impl RegistryClient {
             .filter(|entry| !index.revoked_digests.contains(&entry.sha256))
             .max_by(|left, right| left.version.cmp(&right.version))
             .with_context(|| {
-                format!(
-                    "no compatible non-revoked registry entry for {id} matching {requirement}"
-                )
+                format!("no compatible non-revoked registry entry for {id} matching {requirement}")
             })
     }
 
@@ -126,10 +124,7 @@ impl InstalledPackageStore {
 
     pub fn install(&self, entry: &RegistryEntry, bytes: &[u8]) -> Result<InstalledPackage> {
         verify_package(entry, bytes)?;
-        let package_path = self
-            .root
-            .join("packages")
-            .join(&entry.sha256);
+        let package_path = self.root.join("packages").join(&entry.sha256);
         if !package_path.exists() {
             let tmp = package_path.with_extension(format!("{}.tmp", std::process::id()));
             fs::write(&tmp, bytes)?;
@@ -144,10 +139,11 @@ impl InstalledPackageStore {
             installed_at: chrono_like_now(),
             source_url: entry.package_url.clone(),
         };
-        let metadata_path = self
-            .root
-            .join("metadata")
-            .join(format!("{}-{}.json", entry.id.replace('/', "_"), entry.version));
+        let metadata_path = self.root.join("metadata").join(format!(
+            "{}-{}.json",
+            entry.id.replace('/', "_"),
+            entry.version
+        ));
         fs::write(metadata_path, serde_json::to_vec_pretty(&installed)?)?;
         Ok(installed)
     }
@@ -158,14 +154,11 @@ impl InstalledPackageStore {
         if existed {
             fs::remove_file(path)?;
         }
-        let metadata_path = self
-            .root
-            .join("metadata")
-            .join(format!(
-                "{}-{}.json",
-                installed.id.replace('/', "_"),
-                installed.version
-            ));
+        let metadata_path = self.root.join("metadata").join(format!(
+            "{}-{}.json",
+            installed.id.replace('/', "_"),
+            installed.version
+        ));
         if metadata_path.exists() {
             fs::remove_file(metadata_path)?;
         }
@@ -189,8 +182,7 @@ pub fn verify_package(entry: &RegistryEntry, bytes: &[u8]) -> Result<()> {
     let key_array: [u8; 32] = key_bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("plugin signer key must be 32 bytes"))?;
-    let key = VerifyingKey::from_bytes(&key_array)
-        .context("invalid plugin signer public key")?;
+    let key = VerifyingKey::from_bytes(&key_array).context("invalid plugin signer public key")?;
     let signature = Signature::from_slice(
         &BASE64
             .decode(entry.signature_base64.as_bytes())

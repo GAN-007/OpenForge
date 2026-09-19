@@ -41,16 +41,36 @@ pub struct OpenForgeConfig {
     pub environment: BTreeMap<String, String>,
 }
 
-fn default_state_db() -> String { ".openforge/state.db".into() }
-fn default_artifact_dir() -> String { ".openforge/artifacts".into() }
-fn default_worktree_dir() -> String { ".openforge/worktrees".into() }
-fn default_worker_db() -> String { ".openforge/workers.db".into() }
-fn default_memory_db() -> String { ".openforge/memory.db".into() }
-fn default_team_db() -> String { ".openforge/team.db".into() }
-fn default_collab_db() -> String { ".openforge/collaboration.db".into() }
-fn default_plugin_dir() -> String { ".openforge/plugins".into() }
-fn default_parallel() -> usize { 4 }
-fn default_agent_dir() -> String { "config/agents".into() }
+fn default_state_db() -> String {
+    ".openforge/state.db".into()
+}
+fn default_artifact_dir() -> String {
+    ".openforge/artifacts".into()
+}
+fn default_worktree_dir() -> String {
+    ".openforge/worktrees".into()
+}
+fn default_worker_db() -> String {
+    ".openforge/workers.db".into()
+}
+fn default_memory_db() -> String {
+    ".openforge/memory.db".into()
+}
+fn default_team_db() -> String {
+    ".openforge/team.db".into()
+}
+fn default_collab_db() -> String {
+    ".openforge/collaboration.db".into()
+}
+fn default_plugin_dir() -> String {
+    ".openforge/plugins".into()
+}
+fn default_parallel() -> usize {
+    4
+}
+fn default_agent_dir() -> String {
+    "config/agents".into()
+}
 
 impl Default for OpenForgeConfig {
     fn default() -> Self {
@@ -83,7 +103,6 @@ impl OpenForgeConfig {
         serde_yaml::from_str(&raw).context("parse OpenForge config")
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -137,8 +156,12 @@ pub struct DebugAdapterConfig {
     pub max_message_bytes: usize,
 }
 
-fn default_lsp_timeout() -> u64 { 30 }
-fn default_dap_timeout() -> u64 { 60 }
+fn default_lsp_timeout() -> u64 {
+    30
+}
+fn default_dap_timeout() -> u64 {
+    60
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserWorkerConfig {
@@ -160,10 +183,18 @@ impl Default for BrowserWorkerConfig {
     }
 }
 
-fn default_mcp_timeout() -> u64 { 60 }
-fn default_protocol_bytes() -> usize { 8 * 1024 * 1024 }
-fn default_browser_timeout() -> u64 { 60 }
-fn default_browser_program() -> String { "node".into() }
+fn default_mcp_timeout() -> u64 {
+    60
+}
+fn default_protocol_bytes() -> usize {
+    8 * 1024 * 1024
+}
+fn default_browser_timeout() -> u64 {
+    60
+}
+fn default_browser_program() -> String {
+    "node".into()
+}
 fn default_browser_args() -> Vec<String> {
     vec!["packages/browser-worker/dist/index.js".into()]
 }
@@ -218,9 +249,15 @@ pub struct ModelConfig {
     pub max_data_classification: DataClassification,
 }
 
-fn default_half() -> f64 { 0.5 }
-fn default_quality() -> f64 { 0.8 }
-fn default_privacy() -> f64 { 0.7 }
+fn default_half() -> f64 {
+    0.5
+}
+fn default_quality() -> f64 {
+    0.8
+}
+fn default_privacy() -> f64 {
+    0.7
+}
 
 impl ModelConfig {
     pub fn to_spec(&self, provider: &str) -> ModelSpec {

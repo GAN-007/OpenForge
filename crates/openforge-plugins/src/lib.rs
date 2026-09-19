@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use openforge_mcp::{McpProcessConfig, McpStdioClient};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,11 +10,7 @@ use std::{
     process::Stdio,
     sync::Arc,
 };
-use tokio::{
-    process::Command,
-    sync::RwLock,
-    time::Duration,
-};
+use tokio::{process::Command, sync::RwLock, time::Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -173,7 +169,13 @@ impl PluginRuntimeManager {
     }
 
     pub async fn list(&self) -> Vec<LoadedPlugin> {
-        let mut values = self.loaded.read().await.values().cloned().collect::<Vec<_>>();
+        let mut values = self
+            .loaded
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         values.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
         values
     }
@@ -202,15 +204,9 @@ impl PluginRuntimeManager {
         }
 
         match loaded.manifest.runtime {
-            PluginRuntime::Process => {
-                invoke_process(&loaded, &entrypoint, invocation).await
-            }
-            PluginRuntime::Wasm => {
-                invoke_wasm(&loaded, &entrypoint, invocation).await
-            }
-            PluginRuntime::Mcp => {
-                invoke_mcp(&loaded, &entrypoint, invocation).await
-            }
+            PluginRuntime::Process => invoke_process(&loaded, &entrypoint, invocation).await,
+            PluginRuntime::Wasm => invoke_wasm(&loaded, &entrypoint, invocation).await,
+            PluginRuntime::Mcp => invoke_mcp(&loaded, &entrypoint, invocation).await,
         }
     }
 }
@@ -262,8 +258,10 @@ async fn invoke_process(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(serde_json::from_slice(&output.stdout)
-        .context("process plugin stdout is not valid JSON")?)
+    Ok(
+        serde_json::from_slice(&output.stdout)
+            .context("process plugin stdout is not valid JSON")?,
+    )
 }
 
 async fn invoke_wasm(
@@ -311,8 +309,7 @@ async fn invoke_wasm(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(serde_json::from_slice(&output.stdout)
-        .context("WASM plugin stdout is not valid JSON")?)
+    Ok(serde_json::from_slice(&output.stdout).context("WASM plugin stdout is not valid JSON")?)
 }
 
 async fn invoke_mcp(
@@ -322,11 +319,12 @@ async fn invoke_mcp(
 ) -> Result<Value> {
     let mut config = McpProcessConfig::new(entrypoint.display().to_string(), Vec::new());
     config.cwd = Some(PathBuf::from(&loaded.root));
-    config.request_timeout =
-        Duration::from_secs(invocation.timeout_seconds.clamp(1, 3600));
+    config.request_timeout = Duration::from_secs(invocation.timeout_seconds.clamp(1, 3600));
     let mut client = McpStdioClient::spawn_with_config(config).await?;
     let result = async {
-        client.initialize("openforge-plugin-runtime", env!("CARGO_PKG_VERSION")).await?;
+        client
+            .initialize("openforge-plugin-runtime", env!("CARGO_PKG_VERSION"))
+            .await?;
         let response = client
             .call_tool(&invocation.method, invocation.params)
             .await?;

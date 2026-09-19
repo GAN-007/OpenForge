@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -8,7 +8,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex as StdMutex},
 };
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +50,8 @@ impl TerminalManager {
         cwd: impl AsRef<Path>,
         environment: &BTreeMap<String, String>,
     ) -> Result<TerminalDescriptor> {
-        self.spawn_sized(program, args, cwd, environment, 30, 120).await
+        self.spawn_sized(program, args, cwd, environment, 30, 120)
+            .await
     }
 
     pub async fn spawn_sized(
@@ -98,7 +99,9 @@ impl TerminalManager {
             command.cwd(cwd_for_spawn);
             command.env_clear();
 
-            for key in ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR"] {
+            for key in [
+                "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR",
+            ] {
                 if let Some(value) = std::env::var_os(key) {
                     command.env(key, value);
                 }

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use openforge_protocol::SandboxSecurityProfile;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -115,7 +115,9 @@ impl SandboxBackend for LocalProcessBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         Ok(SandboxLease {
             id: Uuid::new_v4(),
             backend: self.name().into(),
@@ -136,9 +138,9 @@ impl SandboxBackend for LocalProcessBackend {
             .kill_on_drop(true);
         command.env_clear();
 
-        for (key, value) in std::env::vars().filter(|(key, _)| {
-            ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str())
-        }) {
+        for (key, value) in std::env::vars()
+            .filter(|(key, _)| ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str()))
+        {
             command.env(key, value);
         }
         for (key, value) in &lease.policy.environment {
@@ -175,7 +177,9 @@ impl SandboxBackend for DockerBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         let result = host_command(
             "docker",
             &["version", "--format", "{{.Server.Version}}"],
@@ -222,11 +226,7 @@ impl SandboxBackend for DockerBackend {
         } else {
             "rw"
         };
-        let mount = format!(
-            "{}:/workspace:{}",
-            lease.workspace.display(),
-            mount_mode
-        );
+        let mount = format!("{}:/workspace:{}", lease.workspace.display(), mount_mode);
         let memory = format!("{}m", lease.policy.memory_mb);
         let memory_swap = memory.clone();
         let tmp_size = (lease.policy.memory_mb / 4).clamp(64, 1024);
@@ -263,10 +263,7 @@ impl SandboxBackend for DockerBackend {
             arguments.extend(["--cap-drop".into(), "ALL".into()]);
         }
         if lease.policy.security.no_new_privileges {
-            arguments.extend([
-                "--security-opt".into(),
-                "no-new-privileges:true".into(),
-            ]);
+            arguments.extend(["--security-opt".into(), "no-new-privileges:true".into()]);
         }
         if lease.policy.security.seccomp {
             if let Some(profile) = &lease.policy.security.seccomp_profile {
@@ -279,19 +276,13 @@ impl SandboxBackend for DockerBackend {
                 ]);
             }
         } else {
-            arguments.extend([
-                "--security-opt".into(),
-                "seccomp=unconfined".into(),
-            ]);
+            arguments.extend(["--security-opt".into(), "seccomp=unconfined".into()]);
         }
         if let Some(profile) = &lease.policy.security.apparmor_profile {
             if profile.trim().is_empty() {
                 bail!("AppArmor profile cannot be empty");
             }
-            arguments.extend([
-                "--security-opt".into(),
-                format!("apparmor={profile}"),
-            ]);
+            arguments.extend(["--security-opt".into(), format!("apparmor={profile}")]);
         }
         if lease.policy.security.run_as_non_root {
             arguments.extend(["--user".into(), "10001:10001".into()]);
@@ -323,9 +314,7 @@ impl SandboxBackend for DockerBackend {
             other => bail!("unsupported sandbox network mode {other}"),
         }
 
-        if lease.policy.network_enabled
-            && lease.policy.security.network_mode == "none"
-        {
+        if lease.policy.network_enabled && lease.policy.security.network_mode == "none" {
             bail!("task requested network but sandbox network_mode is none");
         }
         for (key, value) in lease
@@ -360,23 +349,14 @@ impl SandboxBackend for DockerBackend {
         {
             Ok(result) => {
                 if result.timed_out {
-                    let _ = host_command(
-                        "docker",
-                        &["rm", "-f", &name],
-                        Duration::from_secs(10),
-                    )
-                    .await;
+                    let _ =
+                        host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 }
                 enforce_workspace_quota(&lease.workspace, lease.policy.disk_mb)?;
                 Ok(result)
             }
             Err(error) => {
-                let _ = host_command(
-                    "docker",
-                    &["rm", "-f", &name],
-                    Duration::from_secs(10),
-                )
-                .await;
+                let _ = host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 Err(error)
             }
         }

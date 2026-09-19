@@ -1,17 +1,17 @@
-use crate::{ensure_repo_access, AppState, AuthContext};
-use anyhow::{bail, Context, Result};
+use crate::{AppState, AuthContext, ensure_repo_access};
+use anyhow::{Context, Result, bail};
 use openforge_collab::{ApprovalStatus, ThreadStatus};
 use openforge_debugger::DebugPhase;
 use openforge_devtools::{
-    docker_inspect, docker_inventory, introspect_database, kubernetes_inventory,
-    terraform_plan_json, DatabaseConnection,
+    DatabaseConnection, docker_inspect, docker_inventory, introspect_database,
+    kubernetes_inventory, terraform_plan_json,
 };
 use openforge_edits::EditPredictionInput;
 use openforge_knowledge::KnowledgeGraph;
 use openforge_memory::MemoryInput;
 use openforge_plugins::PluginInvocation;
 use openforge_team::TeamRole;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -65,7 +65,9 @@ pub async fn handle_extended(
             }
             let temporary = path.with_extension(format!(
                 "{}.openforge-tmp-{}",
-                path.extension().and_then(|value| value.to_str()).unwrap_or(""),
+                path.extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(""),
                 Uuid::new_v4().simple()
             ));
             tokio::fs::write(&temporary, content.as_bytes()).await?;
@@ -113,7 +115,13 @@ pub async fn handle_extended(
             let repo = repository(state, auth, params)?;
             let output = run_git(
                 &repo,
-                &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--branch",
+                    "--untracked-files=all",
+                ],
             )
             .await?;
             parse_git_status(&output)?
@@ -138,8 +146,7 @@ pub async fn handle_extended(
         }
         "git/stage" => {
             let repo = repository(state, auth, params)?;
-            let paths = string_array(params, "paths")?
-                .context("paths is required")?;
+            let paths = string_array(params, "paths")?.context("paths is required")?;
             if paths.is_empty() {
                 bail!("paths cannot be empty");
             }
@@ -153,8 +160,7 @@ pub async fn handle_extended(
         }
         "git/unstage" => {
             let repo = repository(state, auth, params)?;
-            let paths = string_array(params, "paths")?
-                .context("paths is required")?;
+            let paths = string_array(params, "paths")?.context("paths is required")?;
             if paths.is_empty() {
                 bail!("paths cannot be empty");
             }
@@ -303,8 +309,7 @@ pub async fn handle_extended(
         "dap/start" => {
             let name = required_string(params, "name")?;
             let repo = repository(state, auth, params)?;
-            let (session_id, capabilities) =
-                state.services.start_dap(&name, &repo).await?;
+            let (session_id, capabilities) = state.services.start_dap(&name, &repo).await?;
             json!({"session_id": session_id, "capabilities": capabilities})
         }
         "dap/request" => {
@@ -341,10 +346,7 @@ pub async fn handle_extended(
             let repo = repository(state, auth, params)?;
             let program = required_string(params, "program")?;
             let args = string_array(params, "args")?.unwrap_or_default();
-            let cwd = params
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or(".");
+            let cwd = params.get("cwd").and_then(Value::as_str).unwrap_or(".");
             let cwd = safe_child_path(&repo, cwd, true)?;
             let environment = string_map(params, "environment")?;
             let rows = bounded_u32(params, "rows", 30, 1, u16::MAX.into())? as u16;
@@ -393,10 +395,7 @@ pub async fn handle_extended(
         "worker/submit" => {
             let run_id = required_uuid(params, "run_id")?;
             let task_id = optional_uuid(params, "task_id")?;
-            let payload = params
-                .get("payload")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let payload = params.get("payload").cloned().unwrap_or_else(|| json!({}));
             let capabilities = string_set(params, "required_capabilities")?;
             let max_attempts = bounded_u32(params, "max_attempts", 3, 1, 100)?;
             serde_json::to_value(state.services.workers.submit_job(
@@ -440,10 +439,7 @@ pub async fn handle_extended(
                 .get("sequence")
                 .and_then(Value::as_i64)
                 .context("sequence is required")?;
-            let checkpoint = params
-                .get("state")
-                .cloned()
-                .context("state is required")?;
+            let checkpoint = params.get("state").cloned().context("state is required")?;
             serde_json::to_value(state.services.workers.checkpoint(
                 job_id,
                 &lease_token,
@@ -458,10 +454,7 @@ pub async fn handle_extended(
         "worker/complete" => {
             let job_id = required_uuid(params, "job_id")?;
             let lease_token = required_string(params, "lease_token")?;
-            let result = params
-                .get("result")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let result = params.get("result").cloned().unwrap_or_else(|| json!({}));
             json!({
                 "ok": state
                     .services
@@ -501,9 +494,7 @@ pub async fn handle_extended(
                 .map(|value| serde_json::from_value::<Vec<f32>>(value.clone()))
                 .transpose()
                 .context("query_embedding must be a float array")?;
-            let fingerprint = params
-                .get("repository_fingerprint")
-                .and_then(Value::as_str);
+            let fingerprint = params.get("repository_fingerprint").and_then(Value::as_str);
             let limit = bounded_usize(params, "limit", 50, 1, 1000)?;
             serde_json::to_value(state.services.memory.search(
                 scope,
@@ -551,13 +542,9 @@ pub async fn handle_extended(
         "team/membership-set" => {
             let workspace_id = required_uuid(params, "workspace_id")?;
             let identity_id = required_uuid(params, "identity_id")?;
-            let role: TeamRole = serde_json::from_value(
-                params
-                    .get("role")
-                    .cloned()
-                    .context("role is required")?,
-            )
-            .context("invalid team role")?;
+            let role: TeamRole =
+                serde_json::from_value(params.get("role").cloned().context("role is required")?)
+                    .context("invalid team role")?;
             state
                 .services
                 .team
@@ -577,12 +564,11 @@ pub async fn handle_extended(
                 })
                 .transpose()
                 .context("expires_at must be RFC3339")?;
-            let token = state.services.team.issue_token(
-                workspace_id,
-                identity_id,
-                &label,
-                expires_at,
-            )?;
+            let token =
+                state
+                    .services
+                    .team
+                    .issue_token(workspace_id, identity_id, &label, expires_at)?;
             json!({"token": token})
         }
         "team/token-revoke" => {
@@ -593,12 +579,11 @@ pub async fn handle_extended(
             let workspace_id = required_uuid(params, "workspace_id")?;
             let name = required_string(params, "name")?;
             let path = required_string(params, "path")?;
-            serde_json::to_value(
-                state
-                    .services
-                    .team
-                    .register_repository(workspace_id, &name, path)?,
-            )?
+            serde_json::to_value(state.services.team.register_repository(
+                workspace_id,
+                &name,
+                path,
+            )?)?
         }
         "team/repository-list" => {
             let workspace_id = params
@@ -872,13 +857,9 @@ pub async fn handle_extended(
         }
         "debug/advance" => {
             let id = required_uuid(params, "debug_id")?;
-            let phase: DebugPhase = serde_json::from_value(
-                params
-                    .get("phase")
-                    .cloned()
-                    .context("phase is required")?,
-            )
-            .context("invalid debug phase")?;
+            let phase: DebugPhase =
+                serde_json::from_value(params.get("phase").cloned().context("phase is required")?)
+                    .context("invalid debug phase")?;
             let mut session = state.services.get_debug_session(id).await?;
             session.advance(phase)?;
             serde_json::to_value(state.services.update_debug_session(session).await?)?
@@ -899,10 +880,7 @@ pub async fn handle_extended(
             let id = required_uuid(params, "debug_id")?;
             let kind = required_string(params, "kind")?;
             let source = required_string(params, "source")?;
-            let data = params
-                .get("data")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let data = params.get("data").cloned().unwrap_or(Value::Null);
             let mut session = state.services.get_debug_session(id).await?;
             let observation_id = session.record_observation(kind, source, data);
             state.services.update_debug_session(session).await?;
@@ -1005,10 +983,12 @@ fn parse_git_status(output: &str) -> Result<Value> {
         let index = char::from(bytes[0]).to_string();
         let worktree = char::from(bytes[1]).to_string();
         let path = record[3..].to_string();
-        let renamed_or_copied = matches!(bytes[0], b'R' | b'C')
-            || matches!(bytes[1], b'R' | b'C');
+        let renamed_or_copied = matches!(bytes[0], b'R' | b'C') || matches!(bytes[1], b'R' | b'C');
         let original_path = if renamed_or_copied {
-            records.next().filter(|value| !value.is_empty()).map(str::to_string)
+            records
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
         } else {
             None
         };
@@ -1221,10 +1201,7 @@ fn bounded_u64(
     minimum: u64,
     maximum: u64,
 ) -> Result<u64> {
-    let value = params
-        .get(field)
-        .and_then(Value::as_u64)
-        .unwrap_or(default);
+    let value = params.get(field).and_then(Value::as_u64).unwrap_or(default);
     if !(minimum..=maximum).contains(&value) {
         bail!("{field} must be between {minimum} and {maximum}");
     }

@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -632,10 +632,9 @@ pub async fn introspect_oidc_token(
 
 fn string_set(value: Option<serde_json::Value>) -> BTreeSet<String> {
     match value {
-        Some(serde_json::Value::String(value)) => value
-            .split_whitespace()
-            .map(str::to_string)
-            .collect(),
+        Some(serde_json::Value::String(value)) => {
+            value.split_whitespace().map(str::to_string).collect()
+        }
         Some(serde_json::Value::Array(values)) => values
             .into_iter()
             .filter_map(|value| value.as_str().map(str::to_string))

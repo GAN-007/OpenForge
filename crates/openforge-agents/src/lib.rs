@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use openforge_protocol::{CapabilityDomain, TaskBudget};
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,11 @@ impl AgentManifest {
         if !self.budget.max_usd.is_finite() || self.budget.max_usd < 0.0 {
             bail!("agent budget must be finite and non-negative");
         }
-        if self.allowed_tools.iter().any(|tool| self.denied_tools.contains(tool)) {
+        if self
+            .allowed_tools
+            .iter()
+            .any(|tool| self.denied_tools.contains(tool))
+        {
             bail!("an agent tool cannot be both allowed and denied");
         }
         Ok(())
@@ -133,13 +137,12 @@ impl SignedAgentManifest {
         let key_array: [u8; 32] = key_bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("agent signer key must be 32 bytes"))?;
-        let key = VerifyingKey::from_bytes(&key_array)
-            .context("invalid Ed25519 public key")?;
+        let key = VerifyingKey::from_bytes(&key_array).context("invalid Ed25519 public key")?;
         let signature_bytes = BASE64
             .decode(self.signature_base64.as_bytes())
             .context("decode agent manifest signature")?;
-        let signature = Signature::from_slice(&signature_bytes)
-            .context("invalid Ed25519 signature")?;
+        let signature =
+            Signature::from_slice(&signature_bytes).context("invalid Ed25519 signature")?;
         key.verify(&canonical, &signature)
             .context("agent manifest signature verification failed")
     }
@@ -157,8 +160,7 @@ impl AgentRegistry {
             return Ok(registry);
         }
 
-        let mut entries = fs::read_dir(path.as_ref())?
-            .collect::<std::io::Result<Vec<_>>>()?;
+        let mut entries = fs::read_dir(path.as_ref())?.collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(|entry| entry.path());
 
         for entry in entries {
@@ -166,7 +168,10 @@ impl AgentRegistry {
             if !path.is_file() {
                 continue;
             }
-            let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             if !matches!(extension, "yaml" | "yml" | "json") {
                 continue;
             }

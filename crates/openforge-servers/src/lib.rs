@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -43,10 +43,7 @@ pub async fn run_mcp_stdio(handler: Arc<dyn ToolHandler>) -> Result<()> {
         };
 
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
 
         let response = match method {
@@ -76,10 +73,7 @@ pub async fn run_mcp_stdio(handler: Arc<dyn ToolHandler>) -> Result<()> {
                 }
             }),
             "tools/call" => {
-                let name = params
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let arguments = params
                     .get("arguments")
                     .cloned()
@@ -137,10 +131,7 @@ pub async fn run_acp_stdio(handler: Arc<dyn AcpHandler>) -> Result<()> {
         }
         let request: Value = serde_json::from_str(&line).context("parse ACP JSON-RPC request")?;
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
 
         let result: Result<Value> = match method {
@@ -205,10 +196,7 @@ pub async fn run_acp_stdio(handler: Arc<dyn AcpHandler>) -> Result<()> {
     Ok(())
 }
 
-async fn write_json_line(
-    stdout: &mut tokio::io::Stdout,
-    value: &Value,
-) -> Result<()> {
+async fn write_json_line(stdout: &mut tokio::io::Stdout, value: &Value) -> Result<()> {
     let mut payload = serde_json::to_vec(value)?;
     payload.push(b'\n');
     stdout.write_all(&payload).await?;

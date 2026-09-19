@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use openforge_knowledge::KnowledgeGraph;
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};

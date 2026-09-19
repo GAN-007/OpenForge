@@ -1,11 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use openforge_sandbox::{ExecRequest, ExecResult, SandboxBackend, SandboxLease};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -78,10 +74,34 @@ impl VerificationPlan {
 
         if root.join("Cargo.toml").exists() {
             commands.extend([
-                command(VerificationStage::Compile, &["cargo", "check", "--workspace", "--all-targets"], 900),
-                command(VerificationStage::Lint, &["cargo", "fmt", "--all", "--check"], 300),
-                command(VerificationStage::Lint, &["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], 1200),
-                command(VerificationStage::Test, &["cargo", "test", "--workspace"], 1800),
+                command(
+                    VerificationStage::Compile,
+                    &["cargo", "check", "--workspace", "--all-targets"],
+                    900,
+                ),
+                command(
+                    VerificationStage::Lint,
+                    &["cargo", "fmt", "--all", "--check"],
+                    300,
+                ),
+                command(
+                    VerificationStage::Lint,
+                    &[
+                        "cargo",
+                        "clippy",
+                        "--workspace",
+                        "--all-targets",
+                        "--",
+                        "-D",
+                        "warnings",
+                    ],
+                    1200,
+                ),
+                command(
+                    VerificationStage::Test,
+                    &["cargo", "test", "--workspace"],
+                    1800,
+                ),
             ]);
         }
 

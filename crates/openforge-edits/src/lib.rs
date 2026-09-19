@@ -1,8 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use openforge_models::{ModelProvider, ModelRouter};
-use openforge_protocol::{
-    ChatMessage, DataClassification, ModelRequest, ModelRequirements,
-};
+use openforge_protocol::{ChatMessage, DataClassification, ModelRequest, ModelRequirements};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -185,12 +183,9 @@ impl EditPredictor {
             response_schema: None,
         };
 
-        let model = self.router.select(
-            self.provider.catalog(),
-            &request.requirements,
-            14_000,
-            900,
-        )?;
+        let model =
+            self.router
+                .select(self.provider.catalog(), &request.requirements, 14_000, 900)?;
         let response = self.provider.invoke(model, &request).await?;
         if response.cost_usd > input.max_cost_usd {
             bail!("edit prediction exceeded hard call budget");

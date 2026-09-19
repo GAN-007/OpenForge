@@ -54,15 +54,11 @@ class OpenForgeClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise OpenForgeError(
-                f"invalid daemon response: HTTP {response.status_code}"
-            ) from exc
+            raise OpenForgeError(f"invalid daemon response: HTTP {response.status_code}") from exc
 
         if response.is_error or payload.get("error"):
             error = payload.get("error") or {}
-            raise OpenForgeError(
-                str(error.get("message") or f"HTTP {response.status_code}")
-            )
+            raise OpenForgeError(str(error.get("message") or f"HTTP {response.status_code}"))
         if "result" not in payload:
             raise OpenForgeError("daemon response has no result")
         return payload["result"]
@@ -214,12 +210,13 @@ class OpenForgeClient:
     async def telemetry(self) -> dict[str, Any]:
         return await self.rpc("telemetry/snapshot")
 
-
     async def read_file(self, repo: str, path: str) -> dict[str, Any]:
         return await self.rpc("workspace/file-read", {"repo": repo, "path": path})
 
     async def write_file(self, repo: str, path: str, content: str) -> dict[str, Any]:
-        return await self.rpc("workspace/file-write", {"repo": repo, "path": path, "content": content})
+        return await self.rpc(
+            "workspace/file-write", {"repo": repo, "path": path, "content": content}
+        )
 
     async def git_status(self, repo: str) -> dict[str, Any]:
         return await self.rpc("git/status", {"repo": repo})
@@ -237,7 +234,10 @@ class OpenForgeClient:
         return await self.rpc("lsp/start", {"name": name, "repo": repo})
 
     async def lsp_request(self, session_id: str, method: str, params: Any) -> Any:
-        return await self.rpc("lsp/request", {"session_id": session_id, "request_method": method, "request_params": params})
+        return await self.rpc(
+            "lsp/request",
+            {"session_id": session_id, "request_method": method, "request_params": params},
+        )
 
     async def debug_adapters(self) -> list[dict[str, Any]]:
         return await self.rpc("dap/list")
@@ -246,73 +246,154 @@ class OpenForgeClient:
         return await self.rpc("dap/start", {"name": name, "repo": repo})
 
     async def dap_request(self, session_id: str, command: str, arguments: Any | None = None) -> Any:
-        return await self.rpc("dap/request", {"session_id": session_id, "command": command, "arguments": arguments or {}})
+        return await self.rpc(
+            "dap/request",
+            {"session_id": session_id, "command": command, "arguments": arguments or {}},
+        )
 
     async def spawn_terminal(
-        self, repo: str, program: str, *, args: list[str] | None = None,
-        cwd: str = ".", environment: dict[str, str] | None = None,
-        rows: int = 30, cols: int = 120,
+        self,
+        repo: str,
+        program: str,
+        *,
+        args: list[str] | None = None,
+        cwd: str = ".",
+        environment: dict[str, str] | None = None,
+        rows: int = 30,
+        cols: int = 120,
     ) -> dict[str, Any]:
-        return await self.rpc("terminal/spawn", {
-            "repo": repo, "program": program, "args": args or [], "cwd": cwd,
-            "environment": environment or {}, "rows": rows, "cols": cols,
-        })
+        return await self.rpc(
+            "terminal/spawn",
+            {
+                "repo": repo,
+                "program": program,
+                "args": args or [],
+                "cwd": cwd,
+                "environment": environment or {},
+                "rows": rows,
+                "cols": cols,
+            },
+        )
 
     async def register_worker(
-        self, name: str, *, endpoint: str | None = None,
-        capabilities: list[str] | None = None, labels: list[str] | None = None,
+        self,
+        name: str,
+        *,
+        endpoint: str | None = None,
+        capabilities: list[str] | None = None,
+        labels: list[str] | None = None,
     ) -> dict[str, Any]:
-        return await self.rpc("worker/register", {
-            "name": name, "endpoint": endpoint,
-            "capabilities": capabilities or [], "labels": labels or [],
-        })
+        return await self.rpc(
+            "worker/register",
+            {
+                "name": name,
+                "endpoint": endpoint,
+                "capabilities": capabilities or [],
+                "labels": labels or [],
+            },
+        )
 
     async def submit_job(
-        self, run_id: str, *, task_id: str | None = None, payload: Any = None,
-        required_capabilities: list[str] | None = None, max_attempts: int = 3,
+        self,
+        run_id: str,
+        *,
+        task_id: str | None = None,
+        payload: Any = None,
+        required_capabilities: list[str] | None = None,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
-        return await self.rpc("worker/submit", {
-            "run_id": run_id, "task_id": task_id, "payload": payload or {},
-            "required_capabilities": required_capabilities or [], "max_attempts": max_attempts,
-        })
+        return await self.rpc(
+            "worker/submit",
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "payload": payload or {},
+                "required_capabilities": required_capabilities or [],
+                "max_attempts": max_attempts,
+            },
+        )
 
     async def claim_job(self, worker_id: str, lease_seconds: int = 60) -> dict[str, Any] | None:
-        return await self.rpc("worker/claim", {"worker_id": worker_id, "lease_seconds": lease_seconds})
+        return await self.rpc(
+            "worker/claim", {"worker_id": worker_id, "lease_seconds": lease_seconds}
+        )
 
-    async def checkpoint_job(self, job_id: str, lease_token: str, sequence: int, state: Any) -> dict[str, Any]:
-        return await self.rpc("worker/checkpoint", {
-            "job_id": job_id, "lease_token": lease_token, "sequence": sequence, "state": state,
-        })
+    async def checkpoint_job(
+        self, job_id: str, lease_token: str, sequence: int, state: Any
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "worker/checkpoint",
+            {
+                "job_id": job_id,
+                "lease_token": lease_token,
+                "sequence": sequence,
+                "state": state,
+            },
+        )
 
     async def put_rich_memory(self, memory: dict[str, Any]) -> dict[str, Any]:
         return await self.rpc("memory/rich-put", memory)
 
     async def search_rich_memory(
-        self, *, scope: str | None = None, query: str | None = None,
+        self,
+        *,
+        scope: str | None = None,
+        query: str | None = None,
         query_embedding: list[float] | None = None,
-        repository_fingerprint: str | None = None, limit: int = 25,
+        repository_fingerprint: str | None = None,
+        limit: int = 25,
     ) -> list[dict[str, Any]]:
-        return await self.rpc("memory/rich-search", {
-            "scope": scope, "query": query, "query_embedding": query_embedding,
-            "repository_fingerprint": repository_fingerprint, "limit": limit,
-        })
+        return await self.rpc(
+            "memory/rich-search",
+            {
+                "scope": scope,
+                "query": query,
+                "query_embedding": query_embedding,
+                "repository_fingerprint": repository_fingerprint,
+                "limit": limit,
+            },
+        )
 
-    async def create_thread(self, run_id: str, title: str, task_id: str | None = None) -> dict[str, Any]:
-        return await self.rpc("thread/create", {"run_id": run_id, "task_id": task_id, "title": title})
+    async def create_thread(
+        self, run_id: str, title: str, task_id: str | None = None
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "thread/create", {"run_id": run_id, "task_id": task_id, "title": title}
+        )
 
-    async def thread_messages(self, thread_id: str, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        return await self.rpc("thread/messages", {"thread_id": thread_id, "after_sequence": after_sequence, "limit": limit})
+    async def thread_messages(
+        self, thread_id: str, after_sequence: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        return await self.rpc(
+            "thread/messages",
+            {"thread_id": thread_id, "after_sequence": after_sequence, "limit": limit},
+        )
 
     async def queue_instruction(self, thread_id: str, content: str) -> dict[str, Any]:
-        return await self.rpc("thread/instruction-queue", {"thread_id": thread_id, "content": content})
+        return await self.rpc(
+            "thread/instruction-queue", {"thread_id": thread_id, "content": content}
+        )
 
-    async def request_approval(self, thread_id: str, capability: str, subject: str, reason: str) -> dict[str, Any]:
-        return await self.rpc("approval/request", {
-            "thread_id": thread_id, "capability": capability, "subject": subject, "reason": reason,
-        })
+    async def request_approval(
+        self, thread_id: str, capability: str, subject: str, reason: str
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "approval/request",
+            {
+                "thread_id": thread_id,
+                "capability": capability,
+                "subject": subject,
+                "reason": reason,
+            },
+        )
 
-    async def database_introspect(self, repo: str, engine: str, environment: dict[str, str] | None = None) -> dict[str, Any]:
-        return await self.rpc("database/introspect", {"repo": repo, "engine": engine, "environment": environment or {}})
+    async def database_introspect(
+        self, repo: str, engine: str, environment: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "database/introspect",
+            {"repo": repo, "engine": engine, "environment": environment or {}},
+        )
 
     async def docker_inventory(self, repo: str) -> Any:
         return await self.rpc("devops/docker-inventory", {"repo": repo})
@@ -323,8 +404,12 @@ class OpenForgeClient:
     async def terraform_plan(self, repo: str, directory: str = ".") -> Any:
         return await self.rpc("devops/terraform-plan", {"repo": repo, "directory": directory})
 
-    async def create_debug_session(self, run_id: str, issue: str, task_id: str | None = None) -> dict[str, Any]:
-        return await self.rpc("debug/create", {"run_id": run_id, "task_id": task_id, "issue": issue})
+    async def create_debug_session(
+        self, run_id: str, issue: str, task_id: str | None = None
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "debug/create", {"run_id": run_id, "task_id": task_id, "issue": issue}
+        )
 
     async def load_plugin(self, path: str) -> dict[str, Any]:
         return await self.rpc("plugin/load", {"path": path})

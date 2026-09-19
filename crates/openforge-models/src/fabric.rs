@@ -1,5 +1,5 @@
 use crate::{ModelProvider, ModelRouter};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
 use std::sync::Arc;
@@ -125,11 +125,7 @@ impl ModelProvider for FabricProvider {
         &self.catalog
     }
 
-    async fn invoke(
-        &self,
-        model: &ModelSpec,
-        request: &ModelRequest,
-    ) -> Result<ModelResponse> {
+    async fn invoke(&self, model: &ModelSpec, request: &ModelRequest) -> Result<ModelResponse> {
         let mut failures = Vec::new();
 
         for candidate in self.fallback_order(model, request) {
@@ -153,9 +149,7 @@ impl ModelProvider for FabricProvider {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use openforge_protocol::{
-        DataClassification, ModelRequirements, ModelSpec,
-    };
+    use openforge_protocol::{DataClassification, ModelRequirements, ModelSpec};
 
     struct Provider {
         name: String,

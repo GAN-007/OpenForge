@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -29,7 +29,9 @@ impl AzureOpenAiProvider {
             || cfg.api_version.trim().is_empty()
             || cfg.api_key.trim().is_empty()
         {
-            anyhow::bail!("Azure OpenAI endpoint, deployment, api_version and api_key are required");
+            anyhow::bail!(
+                "Azure OpenAI endpoint, deployment, api_version and api_key are required"
+            );
         }
         Ok(Self {
             cfg,
@@ -74,11 +76,7 @@ impl ModelProvider for AzureOpenAiProvider {
         &self.cfg.models
     }
 
-    async fn invoke(
-        &self,
-        model: &ModelSpec,
-        request: &ModelRequest,
-    ) -> Result<ModelResponse> {
+    async fn invoke(&self, model: &ModelSpec, request: &ModelRequest) -> Result<ModelResponse> {
         let url = format!(
             "{}/openai/deployments/{}/chat/completions?api-version={}",
             self.cfg.endpoint.trim_end_matches('/'),

@@ -1,5 +1,5 @@
-mod azure_openai;
 mod anthropic;
+mod azure_openai;
 mod bedrock_cli;
 mod fabric;
 mod gemini;
