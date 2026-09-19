@@ -24,6 +24,7 @@ members = [
   "crates/openforge-devtools",
   "crates/openforge-servers",
   "crates/openforge-debugger",
+  "crates/openforge-edits",
   "crates/openforge-evals",
   "crates/openforge-artifacts",
   "crates/openforge-telemetry",
