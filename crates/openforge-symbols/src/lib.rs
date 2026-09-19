@@ -395,10 +395,10 @@ fn extract_imports(language: &str, content: &str) -> BTreeSet<String> {
             _ => None,
         };
 
-        if let Some(candidate) = candidate {
-            if !candidate.is_empty() {
-                imports.insert(candidate.to_string());
-            }
+        if let Some(candidate) = candidate
+            && !candidate.is_empty()
+        {
+            imports.insert(candidate.to_string());
         }
     }
 
