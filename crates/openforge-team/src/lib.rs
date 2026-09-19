@@ -119,6 +119,15 @@ pub struct Workspace {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRepository {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub name: String,
+    pub canonical_path: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Principal {
     pub identity: Identity,
     pub workspace_id: Uuid,
@@ -179,6 +188,15 @@ impl TeamStore {
                 slug TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspace_repositories(
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                canonical_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id,canonical_path),
+                FOREIGN KEY(workspace_id) REFERENCES team_workspaces(id) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS memberships(
                 workspace_id TEXT NOT NULL,
@@ -287,6 +305,101 @@ impl TeamStore {
             ],
         )?;
         Ok(workspace)
+    }
+
+    pub fn register_repository(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<WorkspaceRepository> {
+        if name.trim().is_empty() {
+            bail!("repository name cannot be empty");
+        }
+        let canonical = path
+            .as_ref()
+            .canonicalize()
+            .with_context(|| format!("repository {} not found", path.as_ref().display()))?;
+        if !canonical.join(".git").exists() {
+            bail!("workspace repository must be a Git working tree");
+        }
+        let repository = WorkspaceRepository {
+            id: Uuid::now_v7(),
+            workspace_id,
+            name: name.trim().to_string(),
+            canonical_path: canonical.display().to_string(),
+            created_at: Utc::now(),
+        };
+        let conn = self.conn.lock().expect("team store mutex poisoned");
+        conn.execute(
+            "INSERT INTO workspace_repositories(
+                id,workspace_id,name,canonical_path,created_at
+             ) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                repository.id.to_string(),
+                repository.workspace_id.to_string(),
+                repository.name,
+                repository.canonical_path,
+                repository.created_at.to_rfc3339()
+            ],
+        )?;
+        Ok(repository)
+    }
+
+    pub fn repositories(&self, workspace_id: Uuid) -> Result<Vec<WorkspaceRepository>> {
+        let conn = self.conn.lock().expect("team store mutex poisoned");
+        let mut statement = conn.prepare(
+            "SELECT id,name,canonical_path,created_at
+             FROM workspace_repositories
+             WHERE workspace_id=?1
+             ORDER BY name,id",
+        )?;
+        let rows = statement.query_map(params![workspace_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            let (id, name, canonical_path, created_at) = row?;
+            values.push(WorkspaceRepository {
+                id: Uuid::parse_str(&id)?,
+                workspace_id,
+                name,
+                canonical_path,
+                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+            });
+        }
+        Ok(values)
+    }
+
+    pub fn require_repository_access(
+        &self,
+        workspace_id: Uuid,
+        path: impl AsRef<Path>,
+    ) -> Result<std::path::PathBuf> {
+        let canonical = path
+            .as_ref()
+            .canonicalize()
+            .with_context(|| format!("repository path {} unavailable", path.as_ref().display()))?;
+        let allowed = self
+            .repositories(workspace_id)?
+            .into_iter()
+            .any(|repository| {
+                let root = std::path::PathBuf::from(repository.canonical_path);
+                canonical == root || canonical.starts_with(&root)
+            });
+        if !allowed {
+            bail!(
+                "path {} is not assigned to workspace {}",
+                canonical.display(),
+                workspace_id
+            );
+        }
+        Ok(canonical)
     }
 
     pub fn set_membership(
