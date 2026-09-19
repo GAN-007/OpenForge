@@ -746,7 +746,23 @@ impl Engine {
         use_docker: bool,
         base_sha: &str,
     ) -> Result<TaskExecution> {
+        let manifest = self.agent_manifest(&task.role)?.clone();
+        self.validate_task_against_manifest(task, &manifest)?;
+
         let mut current = task.clone();
+        current.budget.max_usd = current.budget.max_usd.min(manifest.budget.max_usd);
+        current.budget.max_model_calls = current
+            .budget
+            .max_model_calls
+            .min(manifest.budget.max_model_calls);
+        current.budget.max_tool_calls = current
+            .budget
+            .max_tool_calls
+            .min(manifest.budget.max_tool_calls);
+        current.budget.max_wall_seconds = current
+            .budget
+            .max_wall_seconds
+            .min(manifest.budget.max_wall_seconds);
         current.status = TaskStatus::Running;
         current.attempts += 1;
         current.updated_at = Utc::now();
@@ -802,6 +818,12 @@ impl Engine {
             self.config.mcp_servers.clone(),
             self.config.browser.clone(),
         )?);
+        let model_profile = self
+            .config
+            .model_profiles
+            .get(&manifest.model_profile)
+            .cloned()
+            .unwrap_or_default();
         let agent = AgentLoop {
             store: self.store.clone(),
             provider: self.fabric.clone(),
@@ -809,7 +831,13 @@ impl Engine {
             sandbox: backend.clone(),
             tools: tools.clone(),
             policy,
-            max_iterations: 30,
+            system_prompt: manifest.system_prompt.clone(),
+            allowed_tools: manifest.allowed_tools.clone(),
+            denied_tools: manifest.denied_tools.clone(),
+            preferred_model_families: model_profile.preferred_model_families,
+            excluded_model_families: model_profile.excluded_model_families,
+            max_latency_ms: model_profile.max_latency_ms,
+            max_iterations: manifest.max_iterations,
         };
 
         let result = agent
@@ -822,6 +850,32 @@ impl Engine {
                 tool_cleanup.context("tool bus cleanup failed")?;
                 self.verify_with_backend(&backend, &lease, &current)
                     .await?;
+
+                let verification_plan = VerificationPlan::detect(&workspace.path)?;
+                let verification_report =
+                    Verifier::run(backend.as_ref(), &lease, &verification_plan).await?;
+                self.store.append_event(
+                    Some(run.id),
+                    Some(task.id),
+                    Actor {
+                        kind: "system".into(),
+                        id: "verification".into(),
+                    },
+                    "verification.completed",
+                    serde_json::to_value(&verification_report)?,
+                )?;
+                verification_report.require_passed()?;
+
+                self.review_task(
+                    git,
+                    &workspace,
+                    run,
+                    &current,
+                    &manifest,
+                    &outcome.model_families,
+                )
+                .await?;
+
                 let commit = git
                     .commit_all(
                         &workspace,
@@ -889,6 +943,164 @@ impl Engine {
         backend.destroy(lease).await?;
         git.remove_workspace(&workspace).await?;
         Ok(execution)
+    }
+
+    fn agent_manifest(&self, role: &str) -> Result<&AgentManifest> {
+        let matches = self.agent_registry.by_role(role);
+        match matches.as_slice() {
+            [] => bail!("no agent manifest registered for role {role}"),
+            [manifest] => Ok(*manifest),
+            _ => bail!("multiple agent manifests registered for role {role}; select one explicitly"),
+        }
+    }
+
+    fn validate_task_against_manifest(
+        &self,
+        task: &TaskNode,
+        manifest: &AgentManifest,
+    ) -> Result<()> {
+        for capability in &task.requirements.capabilities {
+            if !manifest.capabilities.contains(capability) {
+                bail!(
+                    "task {} requests capability {:?} not permitted by agent manifest {}",
+                    task.id,
+                    capability,
+                    manifest.id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn review_task(
+        &self,
+        git: &GitBroker,
+        workspace: &GitWorkspace,
+        run: &Run,
+        task: &TaskNode,
+        implementation_manifest: &AgentManifest,
+        implementation_families: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        let mut roles = task.required_reviews.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        roles.extend(implementation_manifest.required_reviews.iter().cloned());
+        if roles.is_empty() {
+            return Ok(());
+        }
+
+        let diff = git.diff(workspace).await?;
+        if diff.trim().is_empty() {
+            return Ok(());
+        }
+
+        for role in roles {
+            let reviewer = self.agent_manifest(&role)?.clone();
+            let profile = self
+                .config
+                .model_profiles
+                .get(&reviewer.model_profile)
+                .cloned()
+                .unwrap_or_default();
+            let mut excluded = profile.excluded_model_families;
+            if reviewer.independent_review_model_family {
+                excluded.extend(implementation_families.iter().cloned());
+                excluded.sort();
+                excluded.dedup();
+            }
+
+            let remaining_run_budget =
+                (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
+            let review_budget = reviewer.budget.max_usd.min(remaining_run_budget);
+            if review_budget <= f64::EPSILON {
+                bail!("run budget exhausted before required {role} review");
+            }
+
+            let request = ModelRequest {
+                invocation_id: Uuid::now_v7(),
+                run_id: run.id,
+                task_id: Some(task.id),
+                messages: vec![
+                    ChatMessage {
+                        role: "system".into(),
+                        content: format!(
+                            "{}\n\nReview the supplied task and Git diff independently. Return ONLY JSON {{\"approved\":true|false,\"summary\":\"...\",\"findings\":[\"...\"]}}. Reject correctness, security, data-loss, broken-test, policy-bypass, or incomplete-implementation defects.",
+                            reviewer.system_prompt
+                        ),
+                    },
+                    ChatMessage {
+                        role: "user".into(),
+                        content: format!(
+                            "TASK\n{}\n\nDESCRIPTION\n{}\n\nDIFF\n{}",
+                            task.title,
+                            task.description,
+                            truncate_for_review(&diff, 120_000)
+                        ),
+                    },
+                ],
+                requirements: ModelRequirements {
+                    task_class: role.clone(),
+                    context_tokens: 48_000,
+                    requires_tools: false,
+                    requires_vision: false,
+                    requires_structured_output: true,
+                    max_cost_usd: review_budget,
+                    max_latency_ms: profile.max_latency_ms,
+                    data_classification: Default::default(),
+                    preferred_model_families: profile.preferred_model_families,
+                    excluded_model_families: excluded,
+                },
+                temperature: 0.0,
+                max_output_tokens: 3500,
+                response_schema: None,
+            };
+
+            let router = ModelRouter::default();
+            let model = router.select(
+                self.fabric.catalog(),
+                &request.requirements,
+                28_000,
+                2_000,
+            )?;
+            let response = self.fabric.invoke(model, &request).await?;
+            let verdict: ReviewVerdict = serde_json::from_str(extract_json(&response.text))
+                .with_context(|| format!("{role} returned invalid review JSON"))?;
+
+            self.store.record_cost(CostRecord {
+                run_id: run.id,
+                task_id: Some(task.id),
+                agent_id: Some(&role),
+                provider: &response.provider,
+                model: &response.model,
+                amount_usd: response.cost_usd,
+                input_tokens: response.input_tokens,
+                output_tokens: response.output_tokens,
+            })?;
+            self.store.append_event(
+                Some(run.id),
+                Some(task.id),
+                Actor {
+                    kind: "agent".into(),
+                    id: role.clone(),
+                },
+                "review.completed",
+                json!({
+                    "approved": verdict.approved,
+                    "summary": verdict.summary,
+                    "findings": verdict.findings,
+                    "provider": response.provider,
+                    "model": response.model,
+                    "independent_model_family": reviewer.independent_review_model_family
+                }),
+            )?;
+
+            if !verdict.approved {
+                bail!(
+                    "{role} review rejected task {}: {}",
+                    task.id,
+                    verdict.summary
+                );
+            }
+        }
+        Ok(())
     }
 
     fn backend(&self, use_docker: bool) -> Arc<dyn SandboxBackend> {
@@ -1015,6 +1227,25 @@ impl Engine {
 }
 
 #[derive(Debug, Deserialize)]
+struct ReviewVerdict {
+    approved: bool,
+    summary: String,
+    #[serde(default)]
+    findings: Vec<String>,
+}
+
+fn truncate_for_review(value: &str, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value.to_string();
+    }
+    let mut end = maximum;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n...[diff truncated {} bytes]", &value[..end], value.len() - end)
+}
+
+#[derive(Debug, Deserialize)]
 struct Plan {
     tasks: Vec<PlanTask>,
 }
@@ -1054,7 +1285,7 @@ fn default_tool_calls() -> u32 { 200 }
 
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
-{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
+{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer|release-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }
