@@ -44,6 +44,7 @@ cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run -p openforge-evals --release -- --root . --policy config/policies/development.yaml
 ```
 
 Initialize OpenForge in an existing Git repository:
