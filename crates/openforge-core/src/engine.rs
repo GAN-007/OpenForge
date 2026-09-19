@@ -281,8 +281,7 @@ impl Engine {
                 ChatMessage {
                     role: "user".into(),
                     content: format!(
-                        "OBJECTIVE\n{}\n\nREPOSITORY INDEX\n{}",
-                        enriched_objective, summary
+                        "OBJECTIVE\n{enriched_objective}\n\nREPOSITORY INDEX\n{summary}"
                     ),
                 },
             ],
