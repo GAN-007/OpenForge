@@ -604,3 +604,459 @@ mod tests {
             .unwrap());
     }
 }
+
+
+use async_trait::async_trait;
+use std::process::Stdio;
+use tokio::{
+    process::Command,
+    time::{timeout, Duration as TokioDuration},
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerCommand {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerCommandResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+}
+
+#[async_trait]
+pub trait WorkerExecutor: Send + Sync {
+    fn kind(&self) -> &'static str;
+    async fn execute(
+        &self,
+        workspace: &std::path::Path,
+        command: &WorkerCommand,
+    ) -> Result<WorkerCommandResult>;
+}
+
+#[derive(Default)]
+pub struct LocalWorkerExecutor;
+
+#[async_trait]
+impl WorkerExecutor for LocalWorkerExecutor {
+    fn kind(&self) -> &'static str {
+        "local"
+    }
+
+    async fn execute(
+        &self,
+        workspace: &std::path::Path,
+        command: &WorkerCommand,
+    ) -> Result<WorkerCommandResult> {
+        execute_local(workspace, command).await
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OciWorkerExecutor {
+    pub program: String,
+    pub image: String,
+    pub cpus: f32,
+    pub memory_mb: u64,
+    pub pids: u32,
+    pub network: String,
+}
+
+impl OciWorkerExecutor {
+    pub fn docker(image: impl Into<String>) -> Self {
+        Self {
+            program: "docker".into(),
+            image: image.into(),
+            cpus: 2.0,
+            memory_mb: 4096,
+            pids: 256,
+            network: "none".into(),
+        }
+    }
+
+    pub fn podman(image: impl Into<String>) -> Self {
+        Self {
+            program: "podman".into(),
+            image: image.into(),
+            cpus: 2.0,
+            memory_mb: 4096,
+            pids: 256,
+            network: "none".into(),
+        }
+    }
+}
+
+#[async_trait]
+impl WorkerExecutor for OciWorkerExecutor {
+    fn kind(&self) -> &'static str {
+        "oci"
+    }
+
+    async fn execute(
+        &self,
+        workspace: &std::path::Path,
+        command: &WorkerCommand,
+    ) -> Result<WorkerCommandResult> {
+        validate_command(command)?;
+        let workspace = workspace
+            .canonicalize()
+            .context("worker workspace not found")?;
+        let cwd = safe_relative(&command.cwd)?;
+        if !self.cpus.is_finite() || self.cpus <= 0.0 || self.memory_mb < 128 || self.pids == 0 {
+            bail!("invalid OCI worker resource limits");
+        }
+        if !matches!(self.network.as_str(), "none" | "bridge") {
+            bail!("OCI worker network must be none or bridge");
+        }
+
+        let mut args = vec![
+            "run".to_string(),
+            "--rm".into(),
+            "--init".into(),
+            "--cap-drop".into(),
+            "ALL".into(),
+            "--security-opt".into(),
+            "no-new-privileges:true".into(),
+            "--user".into(),
+            "10001:10001".into(),
+            "--cpus".into(),
+            self.cpus.to_string(),
+            "--memory".into(),
+            format!("{}m", self.memory_mb),
+            "--pids-limit".into(),
+            self.pids.to_string(),
+            "--network".into(),
+            self.network.clone(),
+            "-v".into(),
+            format!("{}:/workspace:rw", workspace.display()),
+            "-w".into(),
+            if cwd.as_os_str().is_empty() {
+                "/workspace".into()
+            } else {
+                format!("/workspace/{}", cwd.display())
+            },
+        ];
+
+        for (key, value) in &command.environment {
+            validate_env_key(key)?;
+            args.extend(["-e".into(), format!("{key}={value}")]);
+        }
+        args.push(self.image.clone());
+        args.extend(command.argv.clone());
+
+        run_command(
+            &self.program,
+            &args,
+            None,
+            command.timeout_seconds,
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct KubernetesWorkerExecutor {
+    pub namespace: String,
+    pub image: String,
+    pub service_account: Option<String>,
+}
+
+#[async_trait]
+impl WorkerExecutor for KubernetesWorkerExecutor {
+    fn kind(&self) -> &'static str {
+        "kubernetes"
+    }
+
+    async fn execute(
+        &self,
+        _workspace: &std::path::Path,
+        command: &WorkerCommand,
+    ) -> Result<WorkerCommandResult> {
+        validate_command(command)?;
+        validate_resource_name(&self.namespace)?;
+        if self.image.trim().is_empty() {
+            bail!("Kubernetes worker image cannot be empty");
+        }
+
+        let name = format!("openforge-{}", Uuid::new_v4().simple());
+        let mut overrides = serde_json::json!({
+            "apiVersion": "v1",
+            "spec": {
+                "restartPolicy": "Never",
+                "containers": [{
+                    "name": "worker",
+                    "image": self.image,
+                    "command": command.argv,
+                    "env": command.environment.iter().map(|(name,value)| {
+                        serde_json::json!({"name": name, "value": value})
+                    }).collect::<Vec<_>>(),
+                    "securityContext": {
+                        "allowPrivilegeEscalation": false,
+                        "runAsNonRoot": true,
+                        "runAsUser": 10001,
+                        "capabilities": {"drop": ["ALL"]},
+                        "seccompProfile": {"type": "RuntimeDefault"}
+                    }
+                }]
+            }
+        });
+        if let Some(account) = &self.service_account {
+            validate_resource_name(account)?;
+            overrides["spec"]["serviceAccountName"] = serde_json::Value::String(account.clone());
+        }
+
+        let args = vec![
+            "run".into(),
+            name.clone(),
+            "-n".into(),
+            self.namespace.clone(),
+            "--restart=Never".into(),
+            "--attach".into(),
+            "--rm".into(),
+            "--quiet".into(),
+            "--image".into(),
+            self.image.clone(),
+            "--overrides".into(),
+            serde_json::to_string(&overrides)?,
+            "--command".into(),
+            "--".into(),
+        ];
+
+        run_command(
+            "kubectl",
+            &args,
+            None,
+            command.timeout_seconds,
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SshVmWorkerExecutor {
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub identity_file: Option<std::path::PathBuf>,
+    pub remote_workspace: String,
+}
+
+#[async_trait]
+impl WorkerExecutor for SshVmWorkerExecutor {
+    fn kind(&self) -> &'static str {
+        "ssh-vm"
+    }
+
+    async fn execute(
+        &self,
+        _workspace: &std::path::Path,
+        command: &WorkerCommand,
+    ) -> Result<WorkerCommandResult> {
+        validate_command(command)?;
+        validate_host(&self.host)?;
+        validate_resource_name(&self.user)?;
+        if self.remote_workspace.trim().is_empty() {
+            bail!("remote workspace cannot be empty");
+        }
+
+        let mut args = vec![
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
+            "-p".into(),
+            self.port.to_string(),
+        ];
+        if let Some(identity) = &self.identity_file {
+            let identity = identity
+                .canonicalize()
+                .context("SSH identity file not found")?;
+            args.extend(["-i".into(), identity.display().to_string()]);
+        }
+        args.push(format!("{}@{}", self.user, self.host));
+
+        let env_prefix = command
+            .environment
+            .iter()
+            .map(|(key, value)| {
+                validate_env_key(key)?;
+                Ok(format!("{}={}", shell_escape(key), shell_escape(value)))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
+        let remote_cwd = format!(
+            "{}/{}",
+            self.remote_workspace.trim_end_matches('/'),
+            safe_relative(&command.cwd)?.display()
+        );
+        let remote_argv = command
+            .argv
+            .iter()
+            .map(|value| shell_escape(value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        args.push(format!(
+            "cd {} && {} {}",
+            shell_escape(&remote_cwd),
+            env_prefix,
+            remote_argv
+        ));
+
+        run_command(
+            "ssh",
+            &args,
+            None,
+            command.timeout_seconds,
+            &std::collections::BTreeMap::new(),
+        )
+        .await
+    }
+}
+
+async fn execute_local(
+    workspace: &std::path::Path,
+    command: &WorkerCommand,
+) -> Result<WorkerCommandResult> {
+    validate_command(command)?;
+    let workspace = workspace
+        .canonicalize()
+        .context("worker workspace not found")?;
+    let cwd = workspace.join(safe_relative(&command.cwd)?);
+    let canonical_cwd = cwd.canonicalize().context("worker cwd not found")?;
+    if !canonical_cwd.starts_with(&workspace) {
+        bail!("worker cwd escapes workspace");
+    }
+    run_command(
+        &command.argv[0],
+        &command.argv[1..],
+        Some(&canonical_cwd),
+        command.timeout_seconds,
+        &command.environment,
+    )
+    .await
+}
+
+async fn run_command(
+    program: &str,
+    args: &[String],
+    cwd: Option<&std::path::Path>,
+    timeout_seconds: u64,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<WorkerCommandResult> {
+    let mut process = Command::new(program);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env_clear();
+    if let Some(cwd) = cwd {
+        process.current_dir(cwd);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        process.env("PATH", path);
+    }
+    for (key, value) in environment {
+        validate_env_key(key)?;
+        process.env(key, value);
+    }
+
+    let child = process.spawn().with_context(|| format!("spawn worker command {program}"))?;
+    match timeout(
+        TokioDuration::from_secs(timeout_seconds.clamp(1, 86_400)),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(output) => {
+            let output = output?;
+            Ok(WorkerCommandResult {
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                timed_out: false,
+            })
+        }
+        Err(_) => Ok(WorkerCommandResult {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: "worker command timed out".into(),
+            timed_out: true,
+        }),
+    }
+}
+
+fn validate_command(command: &WorkerCommand) -> Result<()> {
+    if command.argv.is_empty() || command.argv[0].trim().is_empty() {
+        bail!("worker command argv cannot be empty");
+    }
+    safe_relative(&command.cwd)?;
+    for key in command.environment.keys() {
+        validate_env_key(key)?;
+    }
+    Ok(())
+}
+
+fn safe_relative(value: &str) -> Result<std::path::PathBuf> {
+    let path = std::path::Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        bail!("worker path must remain relative to workspace");
+    }
+    Ok(path.to_path_buf())
+}
+
+fn validate_env_key(key: &str) -> Result<()> {
+    if key.is_empty()
+        || key.contains('=')
+        || !key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        bail!("invalid worker environment variable name");
+    }
+    Ok(())
+}
+
+fn validate_resource_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+    {
+        bail!("invalid worker resource name");
+    }
+    Ok(())
+}
+
+fn validate_host(value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || "-_.:".contains(character)
+        })
+    {
+        bail!("invalid worker host");
+    }
+    Ok(())
+}
+
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace(''', "'\\''"))
+}
