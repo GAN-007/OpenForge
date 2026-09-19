@@ -1,6 +1,7 @@
 state_db: .openforge/state.db
 artifact_dir: .openforge/artifacts
 worktree_dir: .openforge/worktrees
+plugin_dir: plugins
 max_parallel_agents: 4
 
 providers:
