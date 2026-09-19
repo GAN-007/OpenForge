@@ -1,28 +1,31 @@
 use crate::{AgentLoop, OpenForgeConfig, ToolBus};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use futures_util::future::join_all;
+use openforge_agents::{AgentManifest, AgentRegistry};
 use openforge_context::RepositoryIndex;
-use openforge_search::SearchIndex;
-use openforge_symbols::SymbolGraph;
+use openforge_edits::{EditPrediction, EditPredictionInput, EditPredictor};
 use openforge_git::{GitBroker, GitWorkspace};
+use openforge_knowledge::KnowledgeGraph;
 use openforge_models::{
-    AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider,
-    FabricProvider, GeminiConfig, GeminiProvider, ModelProvider, ModelRouter,
-    OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+    AnthropicConfig, AnthropicProvider, AzureOpenAiConfig, AzureOpenAiProvider, BedrockCliConfig,
+    BedrockCliProvider, FabricProvider, GeminiConfig, GeminiProvider, ModelProvider, ModelRouter,
+    OpenAiCompatibleConfig, OpenAiCompatibleProvider, VertexGeminiConfig, VertexGeminiProvider,
 };
 use openforge_policy::AgentPolicy;
 use openforge_protocol::{
-    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest,
-    ModelRequirements, ResourceLimits, Run, RunStatus, SandboxSecurityProfile,
-    TaskBudget, TaskNode, TaskRequirements, TaskStatus,
+    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest, ModelRequirements,
+    ResourceLimits, Run, RunStatus, SandboxSecurityProfile, TaskBudget, TaskNode, TaskRequirements,
+    TaskStatus,
 };
 use openforge_sandbox::{
-    DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend,
-    SandboxPolicy,
+    DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend, SandboxPolicy,
 };
-use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
+use openforge_scheduler::{SchedulerConfig, schedule_wave, validate_dag};
+use openforge_search::SearchIndex;
 use openforge_store::{CostRecord, Store};
+use openforge_symbols::SymbolGraph;
+use openforge_verification::{VerificationPlan, Verifier};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -47,6 +50,8 @@ pub struct Engine {
     pub store: Store,
     fabric: Arc<dyn ModelProvider>,
     provider_names: Vec<String>,
+    agent_registry: AgentRegistry,
+    edit_predictor: Arc<EditPredictor>,
 }
 
 struct TaskExecution {
@@ -96,28 +101,24 @@ impl Engine {
                         .api_key_env
                         .as_ref()
                         .context("Anthropic provider requires api_key_env")?;
-                    let api_key =
-                        std::env::var(env).with_context(|| format!("missing {env}"))?;
-                    providers.push(Arc::new(AnthropicProvider::new(
-                        AnthropicConfig {
-                            provider_name: provider.name.clone(),
-                            base_url: if provider.base_url.is_empty() {
-                                "https://api.anthropic.com".into()
-                            } else {
-                                provider.base_url.clone()
-                            },
-                            api_key,
-                            models,
+                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(AnthropicProvider::new(AnthropicConfig {
+                        provider_name: provider.name.clone(),
+                        base_url: if provider.base_url.is_empty() {
+                            "https://api.anthropic.com".into()
+                        } else {
+                            provider.base_url.clone()
                         },
-                    )?));
+                        api_key,
+                        models,
+                    })?));
                 }
                 "gemini" => {
                     let env = provider
                         .api_key_env
                         .as_ref()
                         .context("Gemini provider requires api_key_env")?;
-                    let api_key =
-                        std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
                     providers.push(Arc::new(GeminiProvider::new(GeminiConfig {
                         provider_name: provider.name.clone(),
                         base_url: if provider.base_url.is_empty() {
@@ -136,13 +137,56 @@ impl Engine {
                         .or_else(|| std::env::var("AWS_REGION").ok())
                         .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
                         .unwrap_or_else(|| "us-east-1".into());
-                    providers.push(Arc::new(BedrockCliProvider::new(
-                        BedrockCliConfig {
-                            provider_name: provider.name.clone(),
-                            region,
-                            models,
-                        },
-                    )));
+                    providers.push(Arc::new(BedrockCliProvider::new(BedrockCliConfig {
+                        provider_name: provider.name.clone(),
+                        region,
+                        models,
+                    })));
+                }
+                "azure-openai" => {
+                    let env = provider
+                        .api_key_env
+                        .as_ref()
+                        .context("Azure OpenAI provider requires api_key_env")?;
+                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(AzureOpenAiProvider::new(AzureOpenAiConfig {
+                        provider_name: provider.name.clone(),
+                        endpoint: provider.base_url.clone(),
+                        deployment: provider
+                            .deployment
+                            .clone()
+                            .context("Azure OpenAI provider requires deployment")?,
+                        api_version: provider
+                            .api_version
+                            .clone()
+                            .unwrap_or_else(|| "2024-10-21".into()),
+                        api_key,
+                        models,
+                    })?));
+                }
+                "vertex-gemini" => {
+                    let env = provider
+                        .access_token_env
+                        .as_ref()
+                        .context("Vertex Gemini provider requires access_token_env")?;
+                    let access_token =
+                        std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(VertexGeminiProvider::new(VertexGeminiConfig {
+                        provider_name: provider.name.clone(),
+                        project: provider
+                            .project
+                            .clone()
+                            .context("Vertex Gemini provider requires project")?,
+                        location: provider
+                            .location
+                            .clone()
+                            .or_else(|| provider.region.clone())
+                            .unwrap_or_else(|| "us-central1".into()),
+                        access_token,
+                        base_url: (!provider.base_url.trim().is_empty())
+                            .then(|| provider.base_url.clone()),
+                        models,
+                    })?));
                 }
                 other => bail!("unsupported provider kind {other}"),
             }
@@ -151,17 +195,74 @@ impl Engine {
         let fabric_impl = Arc::new(FabricProvider::new(providers)?);
         let provider_names = fabric_impl.provider_names();
         let fabric: Arc<dyn ModelProvider> = fabric_impl;
+        let agent_registry = AgentRegistry::load_directory(&config.agent_dir)?;
+        if agent_registry.all().is_empty() {
+            bail!("no agent manifests loaded from {}", config.agent_dir);
+        }
+        let edit_predictor = Arc::new(EditPredictor::new(fabric.clone()));
 
         Ok(Self {
             config,
             store,
             fabric,
             provider_names,
+            agent_registry,
+            edit_predictor,
         })
     }
 
     pub fn providers(&self) -> &[String] {
         &self.provider_names
+    }
+
+    pub fn agents(&self) -> Vec<&AgentManifest> {
+        self.agent_registry.all()
+    }
+
+    pub async fn predict_edits(&self, input: EditPredictionInput) -> Result<EditPrediction> {
+        let run = self
+            .store
+            .get_run(input.run_id)?
+            .context("run not found for edit prediction")?;
+        let spent = self.store.run_cost(input.run_id)?;
+        if spent >= run.budget.hard_limit {
+            bail!("run budget exhausted");
+        }
+        let prediction = self.edit_predictor.predict(input.clone()).await?;
+        if spent + prediction.cost_usd > run.budget.hard_limit {
+            bail!("edit prediction would exceed run budget");
+        }
+
+        self.store.record_cost(CostRecord {
+            run_id: input.run_id,
+            task_id: None,
+            agent_id: Some("edit-predictor"),
+            provider: &prediction.provider,
+            model: &prediction.model,
+            amount_usd: prediction.cost_usd,
+            input_tokens: 0,
+            output_tokens: 0,
+        })?;
+        self.store.append_event(
+            Some(input.run_id),
+            None,
+            Actor {
+                kind: "agent".into(),
+                id: "edit-predictor".into(),
+            },
+            "edit.predicted",
+            json!({
+                "file_path": input.file_path,
+                "edits": prediction.edits.len(),
+                "confidence": prediction.confidence,
+                "provider": prediction.provider,
+                "model": prediction.model,
+                "latency_ms": prediction.latency_ms,
+                "cost_usd": prediction.cost_usd,
+                "cache_hit": prediction.cache_hit
+            }),
+        )?;
+        Ok(prediction)
     }
 
     pub async fn create_run(
@@ -258,8 +359,7 @@ impl Engine {
         };
 
         let router = ModelRouter::default();
-        let model =
-            router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
+        let model = router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
         let response = self.fabric.invoke(model, &request).await?;
 
         if response.cost_usd > planning_budget {
@@ -286,18 +386,13 @@ impl Engine {
         let allocated = plan.tasks.iter().map(|task| task.max_usd).sum::<f64>();
         let available = (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
         if !allocated.is_finite() || allocated <= 0.0 || allocated > available {
-            bail!(
-                "planner allocated task budget {allocated:.4} but only {available:.4} remains"
-            );
+            bail!("planner allocated task budget {allocated:.4} but only {available:.4} remains");
         }
 
         let now = Utc::now();
         let mut id_map = std::collections::HashMap::new();
         for task in &plan.tasks {
-            if id_map
-                .insert(task.key.clone(), Uuid::new_v4())
-                .is_some()
-            {
+            if id_map.insert(task.key.clone(), Uuid::new_v4()).is_some() {
                 bail!("duplicate task key {}", task.key);
             }
         }
@@ -388,10 +483,10 @@ impl Engine {
         }
 
         self.store.update_run_status(run_id, RunStatus::Running)?;
-        let git =
-            GitBroker::open(repo, PathBuf::from(&self.config.worktree_dir)).await?;
-        let integration =
-            git.create_integration_workspace(run_id, &run.base_sha).await?;
+        let git = GitBroker::open(repo, PathBuf::from(&self.config.worktree_dir)).await?;
+        let integration = git
+            .create_integration_workspace(run_id, &run.base_sha)
+            .await?;
 
         loop {
             tasks = self.store.list_tasks(run_id)?;
@@ -455,14 +550,7 @@ impl Engine {
                 .collect();
 
             let results = join_all(batch.iter().map(|task| {
-                self.execute_task(
-                    &git,
-                    &run,
-                    task,
-                    policy.clone(),
-                    use_docker,
-                    &base_sha,
-                )
+                self.execute_task(&git, &run, task, policy.clone(), use_docker, &base_sha)
             }))
             .await;
 
@@ -471,17 +559,16 @@ impl Engine {
 
                 if let Some(commit) = &execution.commit {
                     let pre_integration_sha = git.workspace_head(&integration).await?;
-                    let integrated_sha =
-                        match git.integrate_commit(&integration, commit).await {
-                            Ok(sha) => sha,
-                            Err(error) => {
-                                let mut failed = task.clone();
-                                failed.status = TaskStatus::Failed;
-                                failed.updated_at = Utc::now();
-                                let _ = self.store.upsert_task(&failed);
-                                return Err(error);
-                            }
-                        };
+                    let integrated_sha = match git.integrate_commit(&integration, commit).await {
+                        Ok(sha) => sha,
+                        Err(error) => {
+                            let mut failed = task.clone();
+                            failed.status = TaskStatus::Failed;
+                            failed.updated_at = Utc::now();
+                            let _ = self.store.upsert_task(&failed);
+                            return Err(error);
+                        }
+                    };
 
                     if let Err(error) = self
                         .verify_acceptance(&integration, &execution.task, use_docker)
@@ -551,8 +638,7 @@ impl Engine {
         let integration_branch = integration.branch.clone();
         git.remove_workspace(&integration).await?;
 
-        self.store
-            .update_run_status(run_id, RunStatus::Completed)?;
+        self.store.update_run_status(run_id, RunStatus::Completed)?;
         self.store.append_event(
             Some(run_id),
             None,
@@ -634,9 +720,7 @@ impl Engine {
         if response.cost_usd > max_cost_usd {
             bail!("completion exceeded its hard cost budget");
         }
-        if self.store.run_cost(run_id)? + response.cost_usd
-            > run.budget.hard_limit
-        {
+        if self.store.run_cost(run_id)? + response.cost_usd > run.budget.hard_limit {
             bail!("run budget exhausted");
         }
 
@@ -680,7 +764,23 @@ impl Engine {
         use_docker: bool,
         base_sha: &str,
     ) -> Result<TaskExecution> {
+        let manifest = self.agent_manifest(&task.role)?.clone();
+        self.validate_task_against_manifest(task, &manifest)?;
+
         let mut current = task.clone();
+        current.budget.max_usd = current.budget.max_usd.min(manifest.budget.max_usd);
+        current.budget.max_model_calls = current
+            .budget
+            .max_model_calls
+            .min(manifest.budget.max_model_calls);
+        current.budget.max_tool_calls = current
+            .budget
+            .max_tool_calls
+            .min(manifest.budget.max_tool_calls);
+        current.budget.max_wall_seconds = current
+            .budget
+            .max_wall_seconds
+            .min(manifest.budget.max_wall_seconds);
         current.status = TaskStatus::Running;
         current.attempts += 1;
         current.updated_at = Utc::now();
@@ -736,6 +836,12 @@ impl Engine {
             self.config.mcp_servers.clone(),
             self.config.browser.clone(),
         )?);
+        let model_profile = self
+            .config
+            .model_profiles
+            .get(&manifest.model_profile)
+            .cloned()
+            .unwrap_or_default();
         let agent = AgentLoop {
             store: self.store.clone(),
             provider: self.fabric.clone(),
@@ -743,19 +849,48 @@ impl Engine {
             sandbox: backend.clone(),
             tools: tools.clone(),
             policy,
-            max_iterations: 30,
+            system_prompt: manifest.system_prompt.clone(),
+            allowed_tools: manifest.allowed_tools.clone(),
+            denied_tools: manifest.denied_tools.clone(),
+            preferred_model_families: model_profile.preferred_model_families,
+            excluded_model_families: model_profile.excluded_model_families,
+            max_latency_ms: model_profile.max_latency_ms,
+            max_iterations: manifest.max_iterations,
         };
 
-        let result = agent
-            .run(&current, &workspace.path, &lease, context)
-            .await;
+        let result = agent.run(&current, &workspace.path, &lease, context).await;
         let tool_cleanup = tools.close().await;
 
         let execution = match result {
             Ok(outcome) if outcome.success => {
                 tool_cleanup.context("tool bus cleanup failed")?;
-                self.verify_with_backend(&backend, &lease, &current)
-                    .await?;
+                self.verify_with_backend(&backend, &lease, &current).await?;
+
+                let verification_plan = VerificationPlan::detect(&workspace.path)?;
+                let verification_report =
+                    Verifier::run(backend.as_ref(), &lease, &verification_plan).await?;
+                self.store.append_event(
+                    Some(run.id),
+                    Some(task.id),
+                    Actor {
+                        kind: "system".into(),
+                        id: "verification".into(),
+                    },
+                    "verification.completed",
+                    serde_json::to_value(&verification_report)?,
+                )?;
+                verification_report.require_passed()?;
+
+                self.review_task(
+                    git,
+                    &workspace,
+                    run,
+                    &current,
+                    &manifest,
+                    &outcome.model_families,
+                )
+                .await?;
+
                 let commit = git
                     .commit_all(
                         &workspace,
@@ -825,6 +960,166 @@ impl Engine {
         Ok(execution)
     }
 
+    fn agent_manifest(&self, role: &str) -> Result<&AgentManifest> {
+        let matches = self.agent_registry.by_role(role);
+        match matches.as_slice() {
+            [] => bail!("no agent manifest registered for role {role}"),
+            [manifest] => Ok(*manifest),
+            _ => {
+                bail!("multiple agent manifests registered for role {role}; select one explicitly")
+            }
+        }
+    }
+
+    fn validate_task_against_manifest(
+        &self,
+        task: &TaskNode,
+        manifest: &AgentManifest,
+    ) -> Result<()> {
+        for capability in &task.requirements.capabilities {
+            if !manifest.capabilities.contains(capability) {
+                bail!(
+                    "task {} requests capability {:?} not permitted by agent manifest {}",
+                    task.id,
+                    capability,
+                    manifest.id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn review_task(
+        &self,
+        git: &GitBroker,
+        workspace: &GitWorkspace,
+        run: &Run,
+        task: &TaskNode,
+        implementation_manifest: &AgentManifest,
+        implementation_families: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        let mut roles = task
+            .required_reviews
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        roles.extend(implementation_manifest.required_reviews.iter().cloned());
+        if roles.is_empty() {
+            return Ok(());
+        }
+
+        let diff = git.diff(workspace).await?;
+        if diff.trim().is_empty() {
+            return Ok(());
+        }
+
+        for role in roles {
+            let reviewer = self.agent_manifest(&role)?.clone();
+            let profile = self
+                .config
+                .model_profiles
+                .get(&reviewer.model_profile)
+                .cloned()
+                .unwrap_or_default();
+            let mut excluded = profile.excluded_model_families;
+            if reviewer.independent_review_model_family {
+                excluded.extend(implementation_families.iter().cloned());
+                excluded.sort();
+                excluded.dedup();
+            }
+
+            let remaining_run_budget =
+                (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
+            let review_budget = reviewer.budget.max_usd.min(remaining_run_budget);
+            if review_budget <= f64::EPSILON {
+                bail!("run budget exhausted before required {role} review");
+            }
+
+            let request = ModelRequest {
+                invocation_id: Uuid::now_v7(),
+                run_id: run.id,
+                task_id: Some(task.id),
+                messages: vec![
+                    ChatMessage {
+                        role: "system".into(),
+                        content: format!(
+                            "{}\n\nReview the supplied task and Git diff independently. Return ONLY JSON {{\"approved\":true|false,\"summary\":\"...\",\"findings\":[\"...\"]}}. Reject correctness, security, data-loss, broken-test, policy-bypass, or incomplete-implementation defects.",
+                            reviewer.system_prompt
+                        ),
+                    },
+                    ChatMessage {
+                        role: "user".into(),
+                        content: format!(
+                            "TASK\n{}\n\nDESCRIPTION\n{}\n\nDIFF\n{}",
+                            task.title,
+                            task.description,
+                            truncate_for_review(&diff, 120_000)
+                        ),
+                    },
+                ],
+                requirements: ModelRequirements {
+                    task_class: role.clone(),
+                    context_tokens: 48_000,
+                    requires_tools: false,
+                    requires_vision: false,
+                    requires_structured_output: true,
+                    max_cost_usd: review_budget,
+                    max_latency_ms: profile.max_latency_ms,
+                    data_classification: Default::default(),
+                    preferred_model_families: profile.preferred_model_families,
+                    excluded_model_families: excluded,
+                },
+                temperature: 0.0,
+                max_output_tokens: 3500,
+                response_schema: None,
+            };
+
+            let router = ModelRouter::default();
+            let model =
+                router.select(self.fabric.catalog(), &request.requirements, 28_000, 2_000)?;
+            let response = self.fabric.invoke(model, &request).await?;
+            let verdict: ReviewVerdict = serde_json::from_str(extract_json(&response.text))
+                .with_context(|| format!("{role} returned invalid review JSON"))?;
+
+            self.store.record_cost(CostRecord {
+                run_id: run.id,
+                task_id: Some(task.id),
+                agent_id: Some(&role),
+                provider: &response.provider,
+                model: &response.model,
+                amount_usd: response.cost_usd,
+                input_tokens: response.input_tokens,
+                output_tokens: response.output_tokens,
+            })?;
+            self.store.append_event(
+                Some(run.id),
+                Some(task.id),
+                Actor {
+                    kind: "agent".into(),
+                    id: role.clone(),
+                },
+                "review.completed",
+                json!({
+                    "approved": verdict.approved,
+                    "summary": verdict.summary,
+                    "findings": verdict.findings,
+                    "provider": response.provider,
+                    "model": response.model,
+                    "independent_model_family": reviewer.independent_review_model_family
+                }),
+            )?;
+
+            if !verdict.approved {
+                bail!(
+                    "{role} review rejected task {}: {}",
+                    task.id,
+                    verdict.summary
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn backend(&self, use_docker: bool) -> Arc<dyn SandboxBackend> {
         if use_docker {
             Arc::new(DockerBackend {
@@ -888,24 +1183,25 @@ impl Engine {
         result
     }
 
-    async fn task_context(
-        &self,
-        workspace: &GitWorkspace,
-        task: &TaskNode,
-    ) -> Result<String> {
+    async fn task_context(&self, workspace: &GitWorkspace, task: &TaskNode) -> Result<String> {
         let index = RepositoryIndex::build(&workspace.path)?;
         let search = SearchIndex::build(&workspace.path)?;
         let symbols = SymbolGraph::build(&workspace.path)?;
+        let knowledge = KnowledgeGraph::build(&workspace.path)?;
         let query = format!("{} {}", task.title, task.description);
 
         let lexical_hits = search.query(&query, 24);
         let symbol_hits = symbols.search(&query, 24);
+        let knowledge_hits = knowledge.find_symbols(&query, 24);
         let mut relevant = index.relevant_files(&query, 24);
 
         for hit in &lexical_hits {
             relevant.push(hit.path.clone());
         }
         for symbol in &symbol_hits {
+            relevant.push(symbol.path.clone());
+        }
+        for symbol in &knowledge_hits {
             relevant.push(symbol.path.clone());
         }
         relevant.sort();
@@ -921,13 +1217,21 @@ impl Engine {
             "total_lines": index.total_lines,
             "languages": index.language_counts,
             "search_stats": search.stats(),
-            "symbol_stats": symbols.stats()
+            "symbol_stats": symbols.stats(),
+            "knowledge": {
+                "files_indexed": knowledge.files_indexed,
+                "nodes": knowledge.nodes.len(),
+                "edges": knowledge.edges.len(),
+                "git_history_files": knowledge.git_history.len()
+            }
         }))?);
 
         output.push_str("\n\nLEXICAL HITS\n");
         output.push_str(&serde_json::to_string(&lexical_hits)?);
         output.push_str("\n\nSYMBOL HITS\n");
         output.push_str(&serde_json::to_string(&symbol_hits)?);
+        output.push_str("\n\nTREE-SITTER KNOWLEDGE HITS\n");
+        output.push_str(&serde_json::to_string(&knowledge_hits)?);
 
         for relative in relevant {
             let path = workspace.path.join(&relative);
@@ -937,15 +1241,35 @@ impl Engine {
                     .nth(16_000)
                     .map(|(index, _)| index)
                     .unwrap_or(text.len());
-                output.push_str(&format!(
-                    "\n\nFILE {relative}\n{}",
-                    &text[..end]
-                ));
+                output.push_str(&format!("\n\nFILE {relative}\n{}", &text[..end]));
             }
         }
 
         Ok(output)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewVerdict {
+    approved: bool,
+    summary: String,
+    #[serde(default)]
+    findings: Vec<String>,
+}
+
+fn truncate_for_review(value: &str, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value.to_string();
+    }
+    let mut end = maximum;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n...[diff truncated {} bytes]",
+        &value[..end],
+        value.len() - end
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -982,13 +1306,19 @@ struct PlanTask {
     max_usd: f64,
 }
 
-fn default_task_attempts() -> u32 { 2 }
-fn default_model_calls() -> u32 { 30 }
-fn default_tool_calls() -> u32 { 200 }
+fn default_task_attempts() -> u32 {
+    2
+}
+fn default_model_calls() -> u32 {
+    30
+}
+fn default_tool_calls() -> u32 {
+    200
+}
 
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
-{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
+{"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer|release-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }
@@ -1008,10 +1338,7 @@ fn strip_fences(value: &str) -> String {
         return trimmed.to_owned();
     }
 
-    let without_open = trimmed
-        .split_once('\n')
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
+    let without_open = trimmed.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
     without_open
         .strip_suffix("```")
         .unwrap_or(without_open)

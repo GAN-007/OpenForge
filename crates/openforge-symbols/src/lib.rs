@@ -58,7 +58,10 @@ pub struct SymbolGraph {
 
 impl SymbolGraph {
     pub fn build(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref().canonicalize().context("symbol root unavailable")?;
+        let root = root
+            .as_ref()
+            .canonicalize()
+            .context("symbol root unavailable")?;
         let mut symbols = Vec::new();
         let mut files = Vec::new();
 
@@ -74,7 +77,10 @@ impl SymbolGraph {
             }
 
             let path = entry.path();
-            if path.components().any(|component| component.as_os_str() == ".git") {
+            if path
+                .components()
+                .any(|component| component.as_os_str() == ".git")
+            {
                 continue;
             }
             if fs::metadata(path)?.len() > 2 * 1024 * 1024 {
@@ -309,9 +315,9 @@ fn declaration(language: &str, line: &str) -> Option<(SymbolKind, String)> {
                 .iter()
                 .position(|word| matches!(*word, "class" | "interface" | "enum"))
             {
-                let name = words.get(position + 1)?.trim_matches(|c: char| {
-                    !c.is_alphanumeric() && c != '_'
-                });
+                let name = words
+                    .get(position + 1)?
+                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
                 let kind = match words[position] {
                     "class" => SymbolKind::Class,
                     "interface" => SymbolKind::Interface,
@@ -341,9 +347,7 @@ fn declaration_by_prefix(
     for (prefix, kind) in prefixes {
         if let Some(rest) = line.strip_prefix(prefix) {
             let name = rest
-                .split(|character: char| {
-                    !(character.is_alphanumeric() || character == '_')
-                })
+                .split(|character: char| !(character.is_alphanumeric() || character == '_'))
                 .next()
                 .unwrap_or("");
             if !name.is_empty() {
@@ -391,10 +395,10 @@ fn extract_imports(language: &str, content: &str) -> BTreeSet<String> {
             _ => None,
         };
 
-        if let Some(candidate) = candidate {
-            if !candidate.is_empty() {
-                imports.insert(candidate.to_string());
-            }
+        if let Some(candidate) = candidate
+            && !candidate.is_empty()
+        {
+            imports.insert(candidate.to_string());
         }
     }
 

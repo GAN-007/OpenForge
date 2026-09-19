@@ -11,6 +11,22 @@ members = [
   "crates/openforge-context",
   "crates/openforge-symbols",
   "crates/openforge-search",
+  "crates/openforge-knowledge",
+  "crates/openforge-lsp",
+  "crates/openforge-dap",
+  "crates/openforge-workers",
+  "crates/openforge-agents",
+  "crates/openforge-verification",
+  "crates/openforge-terminal",
+  "crates/openforge-team",
+  "crates/openforge-collab",
+  "crates/openforge-memory",
+  "crates/openforge-registry",
+  "crates/openforge-devtools",
+  "crates/openforge-servers",
+  "crates/openforge-debugger",
+  "crates/openforge-edits",
+  "crates/openforge-evals",
   "crates/openforge-artifacts",
   "crates/openforge-telemetry",
   "crates/openforge-browser",
@@ -26,12 +42,12 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["OpenForge Contributors"]
 repository = "https://github.com/GAN-007/OpenForge"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -40,12 +56,14 @@ axum = { version = "0.8", features = ["json", "ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { version = "4.5", features = ["derive", "env"] }
+ed25519-dalek = "2"
 futures-util = "0.3"
 globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -55,6 +73,7 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 walkdir = "2"
 zeroize = "1.8"

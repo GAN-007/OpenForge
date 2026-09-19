@@ -1,6 +1,6 @@
 {
   "name": "@openforge/desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,14 +10,19 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@openforge/sdk": "workspace:*",
     "@openforge/ui": "workspace:*",
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
     "@vitejs/plugin-react": "^5.0.2",
-    "vite": "^7.1.5",
-    "typescript": "^5.9.2",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "monaco-editor": "^0.52.2",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",

@@ -1,11 +1,11 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,11 +29,7 @@ pub struct BrowserClient {
 }
 
 impl BrowserClient {
-    pub async fn spawn(
-        program: &str,
-        args: &[String],
-        request_timeout: Duration,
-    ) -> Result<Self> {
+    pub async fn spawn(program: &str, args: &[String], request_timeout: Duration) -> Result<Self> {
         let mut command = Command::new(program);
         command
             .args(args)
@@ -51,7 +47,10 @@ impl BrowserClient {
             .spawn()
             .with_context(|| format!("spawn browser worker {program}"))?;
 
-        let stdin = child.stdin.take().context("browser worker stdin unavailable")?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("browser worker stdin unavailable")?;
         let stdout = child
             .stdout
             .take()
@@ -69,10 +68,7 @@ impl BrowserClient {
     pub async fn navigate(&mut self, url: &str, timeout_ms: u64) -> Result<NavigationResult> {
         validate_http_url(url)?;
         let value = self
-            .request(
-                "navigate",
-                json!({"url": url, "timeout_ms": timeout_ms}),
-            )
+            .request("navigate", json!({"url": url, "timeout_ms": timeout_ms}))
             .await?;
         Ok(serde_json::from_value(value)?)
     }
@@ -91,12 +87,7 @@ impl BrowserClient {
             .context("browser click response missing url")
     }
 
-    pub async fn fill(
-        &mut self,
-        selector: &str,
-        value: &str,
-        timeout_ms: u64,
-    ) -> Result<()> {
+    pub async fn fill(&mut self, selector: &str, value: &str, timeout_ms: u64) -> Result<()> {
         self.request(
             "fill",
             json!({
@@ -162,6 +153,37 @@ impl BrowserClient {
         )?)
     }
 
+    pub async fn raw_request(&mut self, method: &str, params: Value) -> Result<Value> {
+        const ALLOWED: &[&str] = &[
+            "context/new",
+            "page/new",
+            "page/list",
+            "page/switch",
+            "page/close",
+            "navigate",
+            "click",
+            "fill",
+            "press",
+            "text",
+            "html",
+            "dom/snapshot",
+            "accessibility/snapshot",
+            "screenshot",
+            "network/clear",
+            "network/entries",
+            "console/clear",
+            "console",
+            "trace/start",
+            "trace/stop",
+            "storage/state",
+            "storage/save",
+        ];
+        if !ALLOWED.contains(&method) {
+            bail!("unsupported browser worker method {method}");
+        }
+        self.request(method, params).await
+    }
+
     pub async fn close(mut self) -> Result<()> {
         let _ = self.request("close", json!({})).await;
         if self.child.id().is_some() {
@@ -221,7 +243,12 @@ fn validate_http_url(url: &str) -> Result<()> {
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         bail!("browser navigation only permits http:// or https:// URLs");
     }
-    if lower.contains('@') && lower.split('@').next().is_some_and(|prefix| prefix.contains("://")) {
+    if lower.contains('@')
+        && lower
+            .split('@')
+            .next()
+            .is_some_and(|prefix| prefix.contains("://"))
+    {
         bail!("browser navigation URLs containing userinfo are not permitted");
     }
     Ok(())

@@ -1,0 +1,17 @@
+[package]
+name = "openforge-evals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openforge-evals"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+openforge-knowledge = { path = "../openforge-knowledge" }
+openforge-policy = { path = "../openforge-policy" }
+serde.workspace = true
+serde_json.workspace = true

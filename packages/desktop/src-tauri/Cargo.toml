@@ -1,16 +1,17 @@
 [package]
-name="openforge-desktop"
-version="0.1.0"
-description="OpenForge Desktop"
-edition="2024"
-license="Apache-2.0"
+name = "openforge-desktop"
+version = "0.3.0"
+description = "OpenForge Desktop IDE"
+edition = "2024"
+license = "Apache-2.0"
 
 [build-dependencies]
-tauri-build={version="2",features=[]}
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-serde={version="1",features=["derive"]}
-tauri={version="2",features=[]}
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 
 [features]
-custom-protocol=["tauri/custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

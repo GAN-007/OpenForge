@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -91,7 +91,10 @@ impl ModelProvider for AnthropicProvider {
         let started = Instant::now();
         let res = self
             .client
-            .post(format!("{}/v1/messages", self.cfg.base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/v1/messages",
+                self.cfg.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", &self.cfg.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")

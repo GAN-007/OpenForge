@@ -1,8 +1,8 @@
 {
   "name": "openforge-vscode",
   "displayName": "OpenForge",
-  "description": "OpenForge AI Engineering OS client",
-  "version": "0.2.0",
+  "description": "OpenForge AI Engineering OS and distributed agent IDE client",
+  "version": "0.3.0",
   "publisher": "openforge",
   "engines": {
     "vscode": "^1.100.0"
@@ -24,6 +24,18 @@
       {
         "command": "openforge.setApiToken",
         "title": "OpenForge: Set API Token"
+      },
+      {
+        "command": "openforge.createRun",
+        "title": "OpenForge: Create and Plan Run"
+      },
+      {
+        "command": "openforge.executeRun",
+        "title": "OpenForge: Execute Current Run"
+      },
+      {
+        "command": "openforge.queueInstruction",
+        "title": "OpenForge: Queue Agent Instruction"
       },
       {
         "command": "openforge.inspectRun",
@@ -82,6 +94,20 @@
           "default": 0.03,
           "minimum": 0,
           "description": "Hard per-request cost ceiling for inline completion"
+        },
+        "openforge.inlineCompletion.maxLatencyMs": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 100,
+          "maximum": 10000,
+          "description": "Hard latency ceiling for edit prediction"
+        },
+        "openforge.inlineCompletion.minConfidence": {
+          "type": "number",
+          "default": 0.35,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum edit-prediction confidence rendered inline"
         }
       }
     }

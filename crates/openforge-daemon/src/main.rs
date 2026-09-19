@@ -1,32 +1,39 @@
+mod extended;
+mod services;
+
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    Json, Router,
+    extract::{
+        Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64URL},
+};
 use clap::Parser;
+use futures_util::{SinkExt, StreamExt};
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
 use openforge_core::{CompletionInput, Engine, OpenForgeConfig};
 use openforge_events::verify_event_chain;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
-    AutonomyLevel, CapabilitySet, EventEnvelope, RpcError, RpcRequest, RpcResponse,
-    PROTOCOL_VERSION,
+    AutonomyLevel, CapabilitySet, EventEnvelope, PROTOCOL_VERSION, RpcError, RpcRequest,
+    RpcResponse,
 };
 use openforge_search::SearchIndex;
 use openforge_symbols::SymbolGraph;
+use openforge_team::{Permission, Principal};
 use openforge_telemetry::TelemetryRegistry;
-use serde_json::{json, Value};
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-    time::Instant,
-};
+use serde_json::{Value, json};
+use services::ServiceHub;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
@@ -43,26 +50,52 @@ struct Args {
 }
 
 #[derive(Clone)]
-struct AppState {
-    engine: Arc<Engine>,
-    artifacts: ArtifactStore,
-    telemetry: TelemetryRegistry,
-    api_token: Option<Arc<str>>,
-    started_at: Instant,
+pub(crate) struct AppState {
+    pub(crate) engine: Arc<Engine>,
+    pub(crate) artifacts: ArtifactStore,
+    pub(crate) telemetry: TelemetryRegistry,
+    pub(crate) api_token: Option<Arc<str>>,
+    pub(crate) services: Arc<ServiceHub>,
+    pub(crate) started_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthContext {
+    pub(crate) subject: String,
+    pub(crate) principal: Option<Principal>,
+    pub(crate) local_owner: bool,
+}
+
+impl AuthContext {
+    pub(crate) fn require(&self, permission: Permission) -> Result<()> {
+        if self.local_owner {
+            return Ok(());
+        }
+        self.principal
+            .as_ref()
+            .context("authenticated principal unavailable")?
+            .require(permission)
+    }
+
+    pub(crate) fn workspace_id(&self) -> Option<Uuid> {
+        self.principal
+            .as_ref()
+            .map(|principal| principal.workspace_id)
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
     let args = Args::parse();
     let config = OpenForgeConfig::load(&args.config).unwrap_or_default();
     let artifacts = ArtifactStore::open(&config.artifact_dir)?;
+    let services = Arc::new(ServiceHub::new(&config)?);
     let api_token = std::env::var("OPENFORGE_API_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
@@ -74,6 +107,7 @@ async fn main() -> Result<()> {
         artifacts,
         telemetry: TelemetryRegistry::default(),
         api_token,
+        services,
         started_at: Instant::now(),
     };
 
@@ -86,6 +120,8 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/rpc", post(rpc))
+        .route("/v1/terminal/{id}/ws", get(terminal_ws))
+        .route("/v1/runs/{run_id}/events/ws", get(run_events_ws))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state.clone());
@@ -117,16 +153,35 @@ async fn rpc(
 ) -> impl IntoResponse {
     let id = request.id.clone();
 
-    if let Err(error) = authorize(&state, &headers) {
-        state.telemetry.increment("rpc.unauthorized", 1);
+    let auth = match authorize(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            state.telemetry.increment("rpc.unauthorized", 1);
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(RpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: -32001,
+                        message: error.to_string(),
+                        data: None,
+                    }),
+                }),
+            );
+        }
+    };
+    if let Err(error) = authorize_method(&auth, &request.method) {
+        state.telemetry.increment("rpc.forbidden", 1);
         return (
-            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
             Json(RpcResponse {
                 jsonrpc: "2.0".into(),
                 id,
                 result: None,
                 error: Some(RpcError {
-                    code: -32001,
+                    code: -32003,
                     message: error.to_string(),
                     data: None,
                 }),
@@ -138,7 +193,7 @@ async fn rpc(
     let started = Instant::now();
     state.telemetry.increment("rpc.calls", 1);
 
-    let result = handle(&state, request).await;
+    let result = handle(&state, &auth, request).await;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     state.telemetry.observe("rpc.latency_ms", elapsed_ms);
 
@@ -181,7 +236,7 @@ async fn rpc(
     }
 }
 
-async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
+async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "initialize" => {
             let capabilities = [
@@ -215,6 +270,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "run/create" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let objective = required_string(&request.params, "objective")?;
             let budget = request
                 .params
@@ -230,26 +286,25 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             )?;
             let run = state
                 .engine
-                .create_run(PathBuf::from(repo).as_path(), objective, autonomy, budget)
+                .create_run(&repo, objective, autonomy, budget)
                 .await?;
             Ok(serde_json::to_value(run)?)
         }
         "run/plan" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let run_id = required_uuid(&request.params, "run_id")?;
             let run = state
                 .engine
                 .store
                 .get_run(run_id)?
                 .context("run not found")?;
-            let tasks = state
-                .engine
-                .plan_run(PathBuf::from(repo).as_path(), &run)
-                .await?;
+            let tasks = state.engine.plan_run(&repo, &run).await?;
             Ok(serde_json::to_value(tasks)?)
         }
         "run/execute" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let run_id = required_uuid(&request.params, "run_id")?;
             let policy_path = request
                 .params
@@ -264,7 +319,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let policy = AgentPolicy::from_yaml(policy_path)?;
             let branch = state
                 .engine
-                .execute_run(PathBuf::from(repo).as_path(), run_id, policy, docker)
+                .execute_run(&repo, run_id, policy, docker)
                 .await?;
             Ok(json!({"integration_branch": branch}))
         }
@@ -318,17 +373,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .and_then(Value::as_str)
                 .map(Uuid::parse_str)
                 .transpose()?;
-            let repository_id = request
-                .params
-                .get("repository_id")
-                .and_then(Value::as_str);
-            state.engine.store.memory_put(
-                &scope,
-                project_id,
-                repository_id,
-                &key,
-                &value,
-            )?;
+            let repository_id = request.params.get("repository_id").and_then(Value::as_str);
+            state
+                .engine
+                .store
+                .memory_put(&scope, project_id, repository_id, &key, &value)?;
             Ok(json!({"ok": true}))
         }
         "memory/search" => {
@@ -400,10 +449,12 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "repository/index" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             Ok(serde_json::to_value(RepositoryIndex::build(repo)?)?)
         }
         "search/query" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let query = required_string(&request.params, "query")?;
             let limit = request
                 .params
@@ -419,6 +470,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "symbols/query" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let query = required_string(&request.params, "query")?;
             let limit = request
                 .params
@@ -434,6 +486,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "symbols/graph" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             Ok(serde_json::to_value(SymbolGraph::build(repo)?)?)
         }
         "artifact/put" => {
@@ -459,12 +512,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     .unwrap_or_else(|| json!({})),
             )
             .context("artifact metadata must be an object")?;
-            Ok(serde_json::to_value(state.artifacts.put_bytes(
-                &bytes,
-                media_type,
-                source,
-                metadata,
-            )?)?)
+            Ok(serde_json::to_value(
+                state
+                    .artifacts
+                    .put_bytes(&bytes, media_type, source, metadata)?,
+            )?)
         }
         "artifact/get" => {
             let digest = required_string(&request.params, "sha256")?;
@@ -493,7 +545,202 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "telemetry/snapshot" => Ok(serde_json::to_value(state.telemetry.snapshot())?),
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
-        _ => anyhow::bail!("unknown RPC method {}", request.method),
+        _ => {
+            if let Some(value) =
+                extended::handle_extended(state, auth, &request.method, &request.params).await?
+            {
+                Ok(value)
+            } else {
+                anyhow::bail!("unknown RPC method {}", request.method)
+            }
+        }
+    }
+}
+
+async fn terminal_ws(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let auth = match authorize_websocket(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
+    };
+    if let Err(error) = auth.require(Permission::Execute) {
+        return (StatusCode::FORBIDDEN, error.to_string()).into_response();
+    }
+    let id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid terminal id: {error}"),
+            )
+                .into_response();
+        }
+    };
+
+    ws.protocols(["openforge-v1"])
+        .on_upgrade(move |socket| handle_terminal_socket(state, id, socket))
+        .into_response()
+}
+
+async fn handle_terminal_socket(state: AppState, id: Uuid, socket: WebSocket) {
+    let mut output = match state.services.terminals.subscribe(id).await {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(terminal_id=%id, error=%error, "terminal websocket subscription failed");
+            return;
+        }
+    };
+    let (mut sender, mut receiver) = socket.split();
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Err(error) = state.services.terminals.write(id, text.as_bytes()).await {
+                            let _ = sender
+                                .send(Message::Text(
+                                    json!({"type":"error","message":error.to_string()})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if let Err(error) = state.services.terminals.write(id, &bytes).await {
+                            let _ = sender
+                                .send(Message::Text(
+                                    json!({"type":"error","message":error.to_string()})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if sender.send(Message::Pong(bytes)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Err(error)) => {
+                        tracing::debug!(terminal_id=%id,error=%error,"terminal websocket receive error");
+                        break;
+                    }
+                }
+            }
+            event = output.recv() => {
+                match event {
+                    Ok(event) => {
+                        let payload = match serde_json::to_string(&event) {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                tracing::warn!(terminal_id=%id,error=%error,"serialize terminal event failed");
+                                break;
+                            }
+                        };
+                        if sender.send(Message::Text(payload.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let payload = json!({
+                            "type": "lagged",
+                            "skipped": skipped
+                        }).to_string();
+                        if sender.send(Message::Text(payload.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+async fn run_events_ws(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let auth = match authorize_websocket(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+        }
+    };
+    if let Err(error) = auth.require(Permission::Read) {
+        return (StatusCode::FORBIDDEN, error.to_string()).into_response();
+    }
+    let run_id = match Uuid::parse_str(&run_id) {
+        Ok(id) => id,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid run id: {error}")).into_response();
+        }
+    };
+
+    ws.protocols(["openforge-v1"])
+        .on_upgrade(move |socket| handle_run_events_socket(state, run_id, socket))
+        .into_response()
+}
+
+async fn handle_run_events_socket(state: AppState, run_id: Uuid, socket: WebSocket) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut after_sequence = 0i64;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(350));
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if sender.send(Message::Pong(bytes)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+            _ = interval.tick() => {
+                match state.engine.store.list_events(run_id, after_sequence, 500) {
+                    Ok(events) => {
+                        for event in events {
+                            after_sequence = event.sequence;
+                            match serde_json::to_string(&event) {
+                                Ok(payload) => {
+                                    if sender.send(Message::Text(payload.into())).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(run_id=%run_id,error=%error,"serialize run event failed");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let payload = json!({"type":"error","message":error.to_string()}).to_string();
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -521,15 +768,8 @@ fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvel
     Ok(events)
 }
 
-fn evaluate_policy(
-    policy: &AgentPolicy,
-    capability: &str,
-    params: &Value,
-) -> Result<String> {
-    let subject = params
-        .get("subject")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+fn evaluate_policy(policy: &AgentPolicy, capability: &str, params: &Value) -> Result<String> {
+    let subject = params.get("subject").and_then(Value::as_str).unwrap_or("");
     let decision = match capability {
         "read_path" => policy.evaluate(CapabilityRequest::ReadPath(subject)),
         "write_path" => policy.evaluate(CapabilityRequest::WritePath(subject)),
@@ -577,23 +817,110 @@ fn string_array(params: &Value, field: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<()> {
-    let Some(expected) = state.api_token.as_deref() else {
-        return Ok(());
-    };
-
-    let authorization = headers
+fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
+    let supplied = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .context("missing Authorization header")?;
-    let supplied = authorization
-        .strip_prefix("Bearer ")
-        .context("Authorization must use Bearer scheme")?;
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    if !constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
-        anyhow::bail!("invalid API token");
+    authorize_token(state, supplied)
+}
+
+fn authorize_websocket(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
+    if let Ok(auth) = authorize(state, headers) {
+        return Ok(auth);
     }
-    Ok(())
+    let encoded = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find_map(|protocol| protocol.strip_prefix("openforge-token."))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let decoded = encoded
+        .map(|value| BASE64URL.decode(value.as_bytes()))
+        .transpose()
+        .context("invalid WebSocket authentication token encoding")?
+        .map(|bytes| String::from_utf8(bytes).context("WebSocket token is not UTF-8"))
+        .transpose()?;
+
+    authorize_token(state, decoded.as_deref())
+}
+
+fn authorize_token(state: &AppState, supplied: Option<&str>) -> Result<AuthContext> {
+    if let Some(expected) = state.api_token.as_deref() {
+        if let Some(supplied) = supplied {
+            if constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
+                return Ok(AuthContext {
+                    subject: "local-owner".into(),
+                    principal: None,
+                    local_owner: true,
+                });
+            }
+            if let Some(principal) = state.services.team.authenticate(supplied)? {
+                return Ok(AuthContext {
+                    subject: principal.identity.subject.clone(),
+                    principal: Some(principal),
+                    local_owner: false,
+                });
+            }
+        }
+        anyhow::bail!("valid bearer authorization is required");
+    }
+
+    if let Some(supplied) = supplied {
+        if let Some(principal) = state.services.team.authenticate(supplied)? {
+            return Ok(AuthContext {
+                subject: principal.identity.subject.clone(),
+                principal: Some(principal),
+                local_owner: false,
+            });
+        }
+        anyhow::bail!("invalid bearer token");
+    }
+
+    Ok(AuthContext {
+        subject: "local-owner".into(),
+        principal: None,
+        local_owner: true,
+    })
+}
+
+fn authorize_method(auth: &AuthContext, method: &str) -> Result<()> {
+    if auth.local_owner {
+        return Ok(());
+    }
+    let permission = if method.starts_with("team/") {
+        Permission::ManageMembers
+    } else if method.starts_with("plugin/") || method.starts_with("worker/register") {
+        Permission::ManageWorkspace
+    } else if method.starts_with("policy/") && method != "policy/evaluate" {
+        Permission::ManagePolicy
+    } else if method.starts_with("run/execute")
+        || method.starts_with("run/create")
+        || method.starts_with("run/plan")
+        || method.starts_with("terminal/")
+        || method.starts_with("worker/")
+        || method.starts_with("thread/")
+        || method.starts_with("approval/")
+        || method.starts_with("debug/")
+        || method.starts_with("browser/")
+        || method.starts_with("database/")
+        || method.starts_with("devops/")
+        || method.starts_with("edit/")
+    {
+        Permission::Execute
+    } else {
+        Permission::Read
+    };
+    auth.require(permission)
 }
 
 fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
@@ -625,6 +952,26 @@ fn allowed_origins() -> Result<Vec<HeaderValue>> {
         .filter(|origin| !origin.is_empty())
         .map(|origin| HeaderValue::from_str(origin).map_err(Into::into))
         .collect()
+}
+
+pub(crate) fn ensure_repo_access(
+    state: &AppState,
+    auth: &AuthContext,
+    path: &str,
+) -> Result<PathBuf> {
+    let canonical = PathBuf::from(path)
+        .canonicalize()
+        .with_context(|| format!("repository path {path} unavailable"))?;
+    if auth.local_owner {
+        return Ok(canonical);
+    }
+    let workspace_id = auth
+        .workspace_id()
+        .context("team principal has no workspace")?;
+    state
+        .services
+        .team
+        .require_repository_access(workspace_id, &canonical)
 }
 
 fn required_string(params: &Value, field: &str) -> Result<String> {

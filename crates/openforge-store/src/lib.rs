@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use openforge_protocol::{Actor, EventEnvelope, Run, RunStatus, TaskNode};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -237,8 +237,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt =
             conn.prepare("SELECT task_json FROM tasks WHERE run_id=?1 ORDER BY rowid")?;
-        let rows =
-            stmt.query_map([run_id.to_string()], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([run_id.to_string()], |row| row.get::<_, String>(0))?;
 
         rows.map(|row| Ok(serde_json::from_str::<TaskNode>(&row?)?))
             .collect()
@@ -277,8 +276,7 @@ impl Store {
             "payload": &payload,
             "previous_event_hash": &previous
         });
-        let event_hash =
-            hex::encode(Sha256::digest(serde_json::to_vec(&canonical)?));
+        let event_hash = hex::encode(Sha256::digest(serde_json::to_vec(&canonical)?));
 
         tx.execute(
             "INSERT INTO events(
@@ -366,11 +364,8 @@ impl Store {
                 event_id: Uuid::parse_str(&event_id)?,
                 sequence,
                 run_id: Some(run_id),
-                task_id: task_id
-                    .map(|value| Uuid::parse_str(&value))
-                    .transpose()?,
-                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
-                    .with_timezone(&Utc),
+                task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?.with_timezone(&Utc),
                 actor: serde_json::from_str(&actor)?,
                 event_type,
                 payload: serde_json::from_str(&payload)?,
@@ -381,11 +376,7 @@ impl Store {
         Ok(events)
     }
 
-    pub fn list_all_events(
-        &self,
-        after_sequence: i64,
-        limit: usize,
-    ) -> Result<Vec<EventEnvelope>> {
+    pub fn list_all_events(&self, after_sequence: i64, limit: usize) -> Result<Vec<EventEnvelope>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT sequence,event_id,run_id,task_id,timestamp,actor_json,event_type,
@@ -396,23 +387,20 @@ impl Store {
              LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(
-            params![after_sequence, limit.min(100_000) as i64],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, String>(9)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![after_sequence, limit.min(100_000) as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
 
         let mut events = Vec::new();
         for row in rows {
@@ -434,8 +422,7 @@ impl Store {
                 sequence,
                 run_id: run_id.map(|value| Uuid::parse_str(&value)).transpose()?,
                 task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
-                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
-                    .with_timezone(&Utc),
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?.with_timezone(&Utc),
                 actor: serde_json::from_str(&actor)?,
                 event_type,
                 payload: serde_json::from_str(&payload)?,
@@ -540,34 +527,23 @@ impl Store {
              LIMIT ?3",
         )?;
 
-        let rows = stmt.query_map(
-            params![scope, pattern, limit.min(1000) as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![scope, pattern, limit.min(1000) as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (
-                id,
-                scope,
-                project_id,
-                repository_id,
-                key,
-                value_json,
-                created_at,
-                updated_at,
-            ) = row?;
+            let (id, scope, project_id, repository_id, key, value_json, created_at, updated_at) =
+                row?;
             result.push(serde_json::json!({
                 "id": id,
                 "scope": scope,
@@ -582,11 +558,7 @@ impl Store {
         Ok(result)
     }
 
-    pub fn memory_delete(
-        &self,
-        scope: Option<&str>,
-        key: &str,
-    ) -> Result<usize> {
+    pub fn memory_delete(&self, scope: Option<&str>, key: &str) -> Result<usize> {
         if let Some(scope) = scope {
             validate_memory_scope(scope)?;
         }
@@ -685,10 +657,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(store
-            .memory_search(Some("project"), "percentXkey", 10)
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .memory_search(Some("project"), "percentXkey", 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

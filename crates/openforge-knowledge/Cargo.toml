@@ -1,0 +1,18 @@
+[package]
+name = "openforge-knowledge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+ignore.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tree-sitter = "0.24"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"

@@ -6,13 +6,14 @@ It is not an editor fork and it does not combine six upstream agent repositories
 
 ## What is implemented
 
-The repository contains a working Rust control plane and CLI, SQLite WAL event/state store, hash-linked audit ledger, deterministic DAG scheduler, concurrent task worktrees, integration-branch merge coordinator, policy engine, Docker/local execution backends, model fabric, cost accounting, explicit memory, MCP/ACP process clients, repository indexing, browser worker, TypeScript/Python SDKs, web console, Tauri desktop shell, VS Code extension with inline completion, and JetBrains client.
+The repository contains the OpenForge 0.3 engineering platform: Rust control plane and CLI, SQLite WAL event/state store, hash-linked audit ledger, deterministic DAG scheduler, concurrent task worktrees, integration-branch merge coordinator, typed role-specific agents, mandatory verification/review gates, policy engine, hardened OCI execution, durable local/OCI/Kubernetes/SSH workers with leases and checkpoints, LSP and DAP brokers, Tree-sitter semantic knowledge graph, low-latency cross-file edit prediction, persistent terminals, provenance-aware memory, team RBAC/collaboration, executable process/WASM/MCP plugins, MCP and ACP servers, database/DevOps tooling, evidence-driven debugging, browser QA artifacts, TypeScript/Python SDKs, VS Code and JetBrains integrations, and a Monaco/Xterm Tauri desktop IDE with explorer, buffers, tabs/splits, problems, source control, tests, debugger, browser, database and agent surfaces.
 
 Model providers currently supported by the built-in fabric are:
 
 - OpenAI-compatible HTTP endpoints, including Ollama, vLLM, LM Studio, OpenRouter-compatible gateways and compatible hosted APIs;
 - Anthropic Messages API;
-- Google Gemini generateContent API;
+- Google Gemini generateContent API and Vertex Gemini;
+- Azure OpenAI deployments;
 - AWS Bedrock Converse through the authenticated AWS CLI.
 
 The provider abstraction is intentionally independent of the canonical OpenForge run/event state.
@@ -29,7 +30,7 @@ The default development policy denies common secret paths, host Git metadata, pr
 
 Requirements:
 
-- Rust 1.85 or newer;
+- Rust 1.90 or newer;
 - Git;
 - one configured model provider;
 - Docker when using autonomous mode;
@@ -41,7 +42,9 @@ Build and test the Rust workspace:
 ```bash
 cargo fmt --all --check
 cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run -p openforge-evals --release -- --root . --policy config/policies/development.yaml
 ```
 
 Initialize OpenForge in an existing Git repository:
@@ -118,7 +121,7 @@ openforge memory forget architecture --scope project
 
 ## Protocol
 
-The public protocol version is `openforge.protocol.v1`. The daemon exposes JSON-RPC 2.0 at `POST /v1/rpc` and a health endpoint at `GET /health`. MCP and ACP are implemented as separate interoperability boundaries rather than being confused with the OpenForge canonical API.
+The public protocol version is `openforge.protocol.v2`. The authenticated daemon exposes JSON-RPC 2.0 at `POST /v1/rpc`, WebSocket streams for terminal I/O and run events, and `GET /health`. MCP and ACP are first-class client/server interoperability boundaries while the OpenForge protocol remains the canonical run, policy, event, artifact and collaboration API.
 
 ## License
 

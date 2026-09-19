@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -177,19 +177,11 @@ mod tests {
 
     #[test]
     fn stores_and_verifies_content_addressed_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "openforge-artifacts-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("openforge-artifacts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let store = ArtifactStore::open(&root).unwrap();
         let descriptor = store
-            .put_bytes(
-                b"openforge",
-                "text/plain",
-                "test",
-                BTreeMap::new(),
-            )
+            .put_bytes(b"openforge", "text/plain", "test", BTreeMap::new())
             .unwrap();
         assert!(store.verify(&descriptor.digest).unwrap());
         assert_eq!(store.get(&descriptor.digest).unwrap(), b"openforge");

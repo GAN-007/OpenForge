@@ -148,9 +148,7 @@ async fn main() -> Result<()> {
             let tasks = engine.plan_run(&repo, &run).await?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(
-                    &serde_json::json!({"run": run, "tasks": tasks})
-                )?
+                serde_json::to_string_pretty(&serde_json::json!({"run": run, "tasks": tasks}))?
             );
         }
         Command::Execute {
@@ -160,8 +158,7 @@ async fn main() -> Result<()> {
             docker,
         } => {
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run_id, policy, docker).await?;
+            let integration_branch = engine.execute_run(&repo, run_id, policy, docker).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -186,8 +183,7 @@ async fn main() -> Result<()> {
             eprintln!("planned {} tasks for run {}", tasks.len(), run.id);
 
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run.id, policy, docker).await?;
+            let integration_branch = engine.execute_run(&repo, run.id, policy, docker).await?;
 
             println!(
                 "{}",
@@ -212,9 +208,7 @@ async fn main() -> Result<()> {
         Command::Events { run_id, after } => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(
-                    &engine.store.list_events(run_id, after, 1000)?
-                )?
+                serde_json::to_string_pretty(&engine.store.list_events(run_id, after, 1000)?)?
             );
         }
         Command::Providers => {
@@ -234,8 +228,7 @@ async fn main() -> Result<()> {
                 repository_id,
             } => {
                 let value: Value =
-                    serde_json::from_str(&value_json)
-                        .context("value_json must be valid JSON")?;
+                    serde_json::from_str(&value_json).context("value_json must be valid JSON")?;
                 engine.store.memory_put(
                     &scope,
                     project_id,
@@ -257,22 +250,18 @@ async fn main() -> Result<()> {
             } => {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(
-                        &engine
-                            .store
-                            .memory_search(scope.as_deref(), &query, limit)?
-                    )?
+                    serde_json::to_string_pretty(&engine.store.memory_search(
+                        scope.as_deref(),
+                        &query,
+                        limit
+                    )?)?
                 );
             }
             MemoryCommand::Forget { key, scope } => {
-                let deleted = engine
-                    .store
-                    .memory_delete(scope.as_deref(), &key)?;
+                let deleted = engine.store.memory_delete(scope.as_deref(), &key)?;
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(
-                        &serde_json::json!({"deleted": deleted})
-                    )?
+                    serde_json::to_string_pretty(&serde_json::json!({"deleted": deleted}))?
                 );
             }
         },
@@ -298,10 +287,7 @@ async fn init(repo: PathBuf) -> Result<()> {
         .await?;
     }
 
-    println!(
-        "initialized OpenForge configuration in {}",
-        repo.display()
-    );
+    println!("initialized OpenForge configuration in {}", repo.display());
     Ok(())
 }
 

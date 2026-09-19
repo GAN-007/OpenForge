@@ -1,15 +1,14 @@
-use anyhow::{bail, Context, Result};
+use crate::ToolBus;
+use anyhow::{Context, Result, bail};
 use openforge_models::{ModelProvider, ModelRouter};
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
-use openforge_protocol::{
-    Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode,
-};
+use openforge_protocol::{Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode};
 use openforge_sandbox::{ExecRequest, SandboxBackend, SandboxLease};
 use openforge_store::{CostRecord, Store};
-use crate::ToolBus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
+    collections::BTreeSet,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -18,8 +17,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentAction {
-    ReadFile { path: String },
-    WriteFile { path: String, content: String },
+    ReadFile {
+        path: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+    },
     Exec {
         argv: Vec<String>,
         cwd: String,
@@ -51,7 +55,27 @@ pub enum AgentAction {
     BrowserScreenshot {
         full_page: bool,
     },
-    Finish { success: bool, summary: String },
+    Finish {
+        success: bool,
+        summary: String,
+    },
+}
+
+impl AgentAction {
+    fn tool_name(&self) -> &'static str {
+        match self {
+            Self::ReadFile { .. } => "read_file",
+            Self::WriteFile { .. } => "write_file",
+            Self::Exec { .. } => "exec",
+            Self::McpCall { .. } => "mcp_call",
+            Self::BrowserNavigate { .. } => "browser_navigate",
+            Self::BrowserClick { .. } => "browser_click",
+            Self::BrowserFill { .. } => "browser_fill",
+            Self::BrowserText { .. } => "browser_text",
+            Self::BrowserScreenshot { .. } => "browser_screenshot",
+            Self::Finish { .. } => "finish",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +89,7 @@ pub struct AgentOutcome {
     pub success: bool,
     pub summary: String,
     pub iterations: u32,
+    pub model_families: BTreeSet<String>,
 }
 
 pub struct AgentLoop {
@@ -74,6 +99,12 @@ pub struct AgentLoop {
     pub sandbox: Arc<dyn SandboxBackend>,
     pub tools: Arc<ToolBus>,
     pub policy: AgentPolicy,
+    pub system_prompt: String,
+    pub allowed_tools: BTreeSet<String>,
+    pub denied_tools: BTreeSet<String>,
+    pub preferred_model_families: Vec<String>,
+    pub excluded_model_families: Vec<String>,
+    pub max_latency_ms: Option<u64>,
     pub max_iterations: u32,
 }
 
@@ -85,10 +116,14 @@ impl AgentLoop {
         lease: &SandboxLease,
         context: String,
     ) -> Result<AgentOutcome> {
+        if self.system_prompt.trim().is_empty() {
+            bail!("agent system prompt cannot be empty");
+        }
+
         let mut history = vec![
             ChatMessage {
                 role: "system".into(),
-                content: system_prompt(&task.role),
+                content: format!("{}\n\n{}", self.system_prompt, action_contract(&task.role)),
             },
             ChatMessage {
                 role: "user".into(),
@@ -99,10 +134,10 @@ impl AgentLoop {
             },
         ];
 
-        let model_call_limit =
-            self.max_iterations.min(task.budget.max_model_calls).max(1);
+        let model_call_limit = self.max_iterations.min(task.budget.max_model_calls).max(1);
         let mut task_spend = 0.0_f64;
         let mut tool_calls = 0_u32;
+        let mut model_families = BTreeSet::new();
 
         for iteration in 1..=model_call_limit {
             let remaining_budget = (task.budget.max_usd - task_spend).max(0.0);
@@ -111,21 +146,21 @@ impl AgentLoop {
             }
 
             let request = ModelRequest {
-                invocation_id: Uuid::new_v4(),
+                invocation_id: Uuid::now_v7(),
                 run_id: task.run_id,
                 task_id: Some(task.id),
                 messages: history.clone(),
                 requirements: ModelRequirements {
                     task_class: task.role.clone(),
-                    context_tokens: 16_000,
+                    context_tokens: 24_000,
                     requires_tools: false,
                     requires_vision: false,
                     requires_structured_output: true,
                     max_cost_usd: remaining_budget,
-                    max_latency_ms: None,
+                    max_latency_ms: self.max_latency_ms,
                     data_classification: Default::default(),
-                    preferred_model_families: vec![],
-                    excluded_model_families: vec![],
+                    preferred_model_families: self.preferred_model_families.clone(),
+                    excluded_model_families: self.excluded_model_families.clone(),
                 },
                 temperature: 0.1,
                 max_output_tokens: 3500,
@@ -135,10 +170,9 @@ impl AgentLoop {
             let model = self.router.select(
                 self.provider.catalog(),
                 &request.requirements,
-                12_000,
-                2_000,
+                16_000,
+                2_500,
             )?;
-
             let response = self.provider.invoke(model, &request).await?;
             if response.cost_usd > remaining_budget {
                 bail!(
@@ -148,6 +182,15 @@ impl AgentLoop {
                 );
             }
             task_spend += response.cost_usd;
+
+            if let Some(spec) = self
+                .provider
+                .catalog()
+                .iter()
+                .find(|spec| spec.provider == response.provider && spec.model == response.model)
+            {
+                model_families.insert(spec.family.clone());
+            }
 
             self.store.record_cost(CostRecord {
                 run_id: task.run_id,
@@ -171,39 +214,30 @@ impl AgentLoop {
                 json!({
                     "model": response.model,
                     "provider": response.provider,
+                    "model_families": model_families,
                     "cost_usd": response.cost_usd,
                     "task_spend_usd": task_spend,
                     "latency_ms": response.latency_ms
                 }),
             )?;
 
-            let decision: AgentDecision =
-                serde_json::from_str(extract_json(&response.text))
-                    .context("agent returned invalid decision JSON")?;
+            let decision: AgentDecision = serde_json::from_str(extract_json(&response.text))
+                .context("agent returned invalid decision JSON")?;
+            self.require_manifest_tool(&decision.action)?;
 
             let observation = match &decision.action {
                 AgentAction::ReadFile { path } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::ReadPath(path)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::ReadPath(path)))?;
                     let path = safe_existing_path(workspace, path).await?;
                     let data = tokio::fs::read_to_string(&path)
                         .await
                         .with_context(|| format!("read {}", path.display()))?;
-                    format!(
-                        "READ {}\n{}",
-                        path.display(),
-                        truncate(&data, 40_000)
-                    )
+                    format!("READ {}\n{}", path.display(), truncate(&data, 40_000))
                 }
                 AgentAction::WriteFile { path, content } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::WritePath(path)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::WritePath(path)))?;
                     let path = safe_write_path(workspace, path).await?;
                     if let Some(parent) = path.parent() {
                         tokio::fs::create_dir_all(parent).await?;
@@ -222,11 +256,7 @@ impl AgentLoop {
                             "bytes": content.len()
                         }),
                     )?;
-                    format!(
-                        "WROTE {} ({} bytes)",
-                        path.display(),
-                        content.len()
-                    )
+                    format!("WROTE {} ({} bytes)", path.display(), content.len())
                 }
                 AgentAction::Exec {
                     argv,
@@ -234,10 +264,7 @@ impl AgentLoop {
                     timeout_seconds,
                 } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::Process(argv)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::Process(argv)))?;
                     let result = self
                         .sandbox
                         .exec(
@@ -284,10 +311,7 @@ impl AgentLoop {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
                     let subject = format!("{server}/{tool}");
                     require(self.policy.evaluate(CapabilityRequest::Mcp(&subject)))?;
-                    let result = self
-                        .tools
-                        .mcp_call(server, tool, arguments.clone())
-                        .await?;
+                    let result = self.tools.mcp_call(server, tool, arguments.clone()).await?;
                     self.store.append_event(
                         Some(task.run_id),
                         Some(task.id),
@@ -385,7 +409,10 @@ impl AgentLoop {
                 }
                 AgentAction::BrowserScreenshot { full_page } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(self.policy.evaluate(CapabilityRequest::Browser("screenshot")))?;
+                    require(
+                        self.policy
+                            .evaluate(CapabilityRequest::Browser("screenshot")),
+                    )?;
                     let result = self.tools.browser_screenshot(*full_page).await?;
                     let summary = result
                         .get("url")
@@ -410,15 +437,14 @@ impl AgentLoop {
                         .and_then(serde_json::Value::as_str)
                         .map(str::len)
                         .unwrap_or(0);
-                    format!(
-                        "BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}"
-                    )
+                    format!("BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}")
                 }
                 AgentAction::Finish { success, summary } => {
                     return Ok(AgentOutcome {
                         success: *success,
                         summary: summary.clone(),
                         iterations: iteration,
+                        model_families,
                     });
                 }
             };
@@ -436,6 +462,20 @@ impl AgentLoop {
         }
 
         bail!("agent exceeded {model_call_limit} model calls")
+    }
+
+    fn require_manifest_tool(&self, action: &AgentAction) -> Result<()> {
+        let name = action.tool_name();
+        if name == "finish" {
+            return Ok(());
+        }
+        if self.denied_tools.contains(name) {
+            bail!("tool {name} denied by agent manifest");
+        }
+        if !self.allowed_tools.is_empty() && !self.allowed_tools.contains(name) {
+            bail!("tool {name} is not allowed by agent manifest");
+        }
+        Ok(())
     }
 }
 
@@ -536,10 +576,10 @@ fn extract_json(value: &str) -> &str {
     }
 }
 
-fn system_prompt(role: &str) -> String {
+fn action_contract(role: &str) -> String {
     format!(
-        r#"You are the OpenForge {role} agent operating inside a controlled engineering workspace.
-You must make one concrete, verifiable action at a time and return ONLY JSON matching:
+        r#"You are executing as the OpenForge {role} runtime inside a controlled engineering workspace.
+Return one concrete action at a time as ONLY JSON matching one of these shapes:
 {{"reasoning_summary":"brief factual rationale","action":{{"type":"read_file","path":"..."}}}}
 {{"reasoning_summary":"...","action":{{"type":"write_file","path":"...","content":"complete file contents"}}}}
 {{"reasoning_summary":"...","action":{{"type":"exec","argv":["command","arg"],"cwd":".","timeout_seconds":120}}}}
@@ -550,6 +590,6 @@ You must make one concrete, verifiable action at a time and return ONLY JSON mat
 {{"reasoning_summary":"...","action":{{"type":"browser_text","selector":"body","timeout_ms":10000}}}}
 {{"reasoning_summary":"...","action":{{"type":"browser_screenshot","full_page":true}}}}
 {{"reasoning_summary":"...","action":{{"type":"finish","success":true,"summary":"verified outcome"}}}}
-Never request secrets, never access outside the workspace, never claim a test passed unless you executed it and observed success, and do not finish while required acceptance checks are failing."#
+Never request secrets, never access outside the workspace, never claim a test passed unless it was executed and observed, and never finish while mandatory verification is known to be failing."#
     )
 }
