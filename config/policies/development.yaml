@@ -95,6 +95,14 @@ database_write:
 
 secrets:
   default: deny
+  allow:
+    - "secret://OPENAI_API_KEY"
+    - "secret://ANTHROPIC_API_KEY"
+    - "secret://GOOGLE_API_KEY"
+    - "secret://OPENROUTER_API_KEY"
+    - "secret://AWS_ACCESS_KEY_ID"
+    - "secret://AWS_SECRET_ACCESS_KEY"
+    - "secret://AWS_SESSION_TOKEN"
 
 cloud_read:
   default: ask
