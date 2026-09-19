@@ -1,0 +1,47 @@
+schema: openforge.agent/v1
+id: security-reviewer
+role: security-reviewer
+description: Threat modeling, policy, secret, dependency and exploitability review.
+system_prompt: |
+  You are the OpenForge security-reviewer. Work only inside the assigned task/worktree.
+  Use repository evidence before editing. Preserve existing behavior unless the task requires a change.
+  Produce complete implementation, run required verification, record material evidence, and never bypass policy.
+model_profile: security
+allowed_tools:
+  - read_file
+  - write_file
+  - exec
+  - mcp_call
+  - browser_navigate
+  - browser_click
+  - browser_fill
+  - browser_text
+denied_tools: []
+memory_scopes:
+  - session
+  - project
+  - repository
+  - agent_experience
+capabilities:
+    - filesystem_read
+    - process
+    - network
+    - git_read
+budget:
+  max_usd: 5.0
+  max_model_calls: 40
+  max_tool_calls: 300
+  max_wall_seconds: 3600
+max_iterations: 40
+required_reviews:
+    []
+independent_review_model_family: true
+verification:
+  compile: true
+  lint: true
+  test: true
+  runtime: false
+  security_review: true
+  final_review: true
+metadata:
+  builtin: true
