@@ -113,10 +113,10 @@ pub async fn handle_extended(
             let repo = repository(state, auth, params)?;
             let output = run_git(
                 &repo,
-                &["status", "--porcelain=v2", "--branch", "--untracked-files=all"],
+                &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],
             )
             .await?;
-            json!({"porcelain_v2": output})
+            parse_git_status(&output)?
         }
         "git/diff" => {
             let repo = repository(state, auth, params)?;
@@ -983,6 +983,47 @@ pub async fn handle_extended(
     };
 
     Ok(Some(value))
+}
+
+fn parse_git_status(output: &str) -> Result<Value> {
+    let mut records = output.split('\0').peekable();
+    let mut branch = None::<String>;
+    let mut entries = Vec::new();
+
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        if let Some(value) = record.strip_prefix("## ") {
+            branch = Some(value.to_string());
+            continue;
+        }
+        if record.len() < 4 {
+            continue;
+        }
+        let bytes = record.as_bytes();
+        let index = char::from(bytes[0]).to_string();
+        let worktree = char::from(bytes[1]).to_string();
+        let path = record[3..].to_string();
+        let renamed_or_copied = matches!(bytes[0], b'R' | b'C')
+            || matches!(bytes[1], b'R' | b'C');
+        let original_path = if renamed_or_copied {
+            records.next().filter(|value| !value.is_empty()).map(str::to_string)
+        } else {
+            None
+        };
+        entries.push(json!({
+            "index": index,
+            "worktree": worktree,
+            "path": path,
+            "original_path": original_path
+        }));
+    }
+
+    Ok(json!({
+        "branch": branch,
+        "entries": entries
+    }))
 }
 
 async fn run_git(repo: &std::path::Path, arguments: &[&str]) -> Result<String> {
