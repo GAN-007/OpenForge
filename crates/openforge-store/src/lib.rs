@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use openforge_protocol::{Actor, EventEnvelope, Run, RunStatus, TaskNode};
+use openforge_protocol::{Actor, Budget, EventEnvelope, Run, RunStatus, SecretLeaseDescriptor, TaskNode};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -19,6 +19,24 @@ pub struct CostRecord<'a> {
     pub amount_usd: f64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BudgetLimitsRecord {
+    pub per_call: f64,
+    pub per_task: f64,
+    pub per_run: f64,
+    pub daily: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BudgetReservationRecord {
+    pub reservation_id: Uuid,
+    pub run_id: Uuid,
+    pub estimated_usd: f64,
+    pub actual_usd: Option<f64>,
+    pub created_at: DateTime<Utc>,
+    pub settled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -120,6 +138,51 @@ impl Store {
               updated_at TEXT NOT NULL,
               UNIQUE(scope, project_id, repository_id, key)
             );
+            CREATE TABLE IF NOT EXISTS secret_leases (
+              lease_id TEXT PRIMARY KEY,
+              secret_name TEXT NOT NULL,
+              audience TEXT NOT NULL,
+              issued_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              renewable INTEGER NOT NULL DEFAULT 0,
+              revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_secret_leases_issued
+              ON secret_leases(issued_at DESC);
+
+            CREATE TABLE IF NOT EXISTS secret_lease_revocations (
+              lease_id TEXT PRIMARY KEY REFERENCES secret_leases(lease_id) ON DELETE CASCADE,
+              revoked_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS acp_processes (
+              process_id TEXT PRIMARY KEY,
+              program TEXT NOT NULL,
+              started_at TEXT NOT NULL,
+              closed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_acp_processes_started
+              ON acp_processes(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS budget_limits (
+              run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+              per_call REAL NOT NULL CHECK(per_call >= 0),
+              per_task REAL NOT NULL CHECK(per_task >= 0),
+              per_run REAL NOT NULL CHECK(per_run >= 0),
+              daily REAL NOT NULL CHECK(daily >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS budget_reservations (
+              reservation_id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              estimated_usd REAL NOT NULL CHECK(estimated_usd >= 0),
+              actual_usd REAL CHECK(actual_usd IS NULL OR actual_usd >= 0),
+              created_at TEXT NOT NULL,
+              settled_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_budget_reservations_run
+              ON budget_reservations(run_id, created_at DESC);
+
             "#,
         )?;
         Ok(())
@@ -482,6 +545,274 @@ impl Store {
             [run_id.to_string()],
             |row| row.get(0),
         )?)
+    }
+
+    pub fn record_secret_lease(&self, lease: &SecretLeaseDescriptor) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO secret_leases(
+                lease_id,secret_name,audience,issued_at,expires_at,renewable,revoked_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,NULL)
+             ON CONFLICT(lease_id) DO UPDATE SET
+               secret_name=excluded.secret_name,
+               audience=excluded.audience,
+               issued_at=excluded.issued_at,
+               expires_at=excluded.expires_at,
+               renewable=excluded.renewable",
+            params![
+                lease.id.to_string(),
+                &lease.secret_name,
+                &lease.audience,
+                lease.issued_at.to_rfc3339(),
+                lease.expires_at.to_rfc3339(),
+                i64::from(lease.renewable)
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn revoke_secret_lease(&self, lease_id: Uuid) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_leases WHERE lease_id=?1)",
+            [lease_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO secret_lease_revocations(lease_id,revoked_at)
+             VALUES(?1,?2)
+             ON CONFLICT(lease_id) DO UPDATE SET revoked_at=excluded.revoked_at",
+            params![lease_id.to_string(), &now],
+        )?;
+        tx.execute(
+            "UPDATE secret_leases SET revoked_at=?2 WHERE lease_id=?1",
+            params![lease_id.to_string(), &now],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn list_secret_leases(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT lease_id,secret_name,audience,issued_at,expires_at,renewable,revoked_at
+             FROM secret_leases ORDER BY issued_at DESC LIMIT 200",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "lease_id": row.get::<_, String>(0)?,
+                "secret_name": row.get::<_, String>(1)?,
+                "audience": row.get::<_, String>(2)?,
+                "issued_at": row.get::<_, String>(3)?,
+                "expires_at": row.get::<_, String>(4)?,
+                "renewable": row.get::<_, i64>(5)? != 0,
+                "revoked_at": row.get::<_, Option<String>>(6)?,
+            }))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn register_acp_process(&self, program: &str) -> Result<Uuid> {
+        if program.trim().is_empty() {
+            anyhow::bail!("ACP program cannot be empty");
+        }
+        let process_id = Uuid::now_v7();
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO acp_processes(process_id,program,started_at,closed_at)
+             VALUES(?1,?2,?3,NULL)",
+            params![process_id.to_string(), program, Utc::now().to_rfc3339()],
+        )?;
+        Ok(process_id)
+    }
+
+    pub fn deregister_acp_process(&self, process_id: Uuid) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE acp_processes SET closed_at=?2
+             WHERE process_id=?1 AND closed_at IS NULL",
+            params![process_id.to_string(), Utc::now().to_rfc3339()],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn list_acp_processes(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT process_id,program,started_at,closed_at
+             FROM acp_processes ORDER BY started_at DESC LIMIT 100",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let closed_at: Option<String> = row.get(3)?;
+            Ok(serde_json::json!({
+                "process_id": row.get::<_, String>(0)?,
+                "program": row.get::<_, String>(1)?,
+                "started_at": row.get::<_, String>(2)?,
+                "closed_at": closed_at,
+                "active": closed_at.is_none(),
+            }))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn budget_limits(&self, run_id: Uuid) -> Result<Option<BudgetLimitsRecord>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT per_call,per_task,per_run,daily FROM budget_limits WHERE run_id=?1",
+            [run_id.to_string()],
+            |row| {
+                Ok(BudgetLimitsRecord {
+                    per_call: row.get(0)?,
+                    per_task: row.get(1)?,
+                    per_run: row.get(2)?,
+                    daily: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn set_budget_limits(&self, run_id: Uuid, limits: &BudgetLimitsRecord) -> Result<()> {
+        for value in [limits.per_call, limits.per_task, limits.per_run, limits.daily] {
+            if !value.is_finite() || value < 0.0 {
+                anyhow::bail!("invalid budget limit");
+            }
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO budget_limits(run_id,per_call,per_task,per_run,daily)
+             VALUES(?1,?2,?3,?4,?5)
+             ON CONFLICT(run_id) DO UPDATE SET
+               per_call=excluded.per_call,
+               per_task=excluded.per_task,
+               per_run=excluded.per_run,
+               daily=excluded.daily",
+            params![run_id.to_string(), limits.per_call, limits.per_task, limits.per_run, limits.daily],
+        )?;
+        Ok(())
+    }
+
+    pub fn register_budget_reservation(
+        &self,
+        run_id: Uuid,
+        estimated: f64,
+        hard_limit: f64,
+    ) -> Result<Uuid> {
+        if !estimated.is_finite() || estimated < 0.0 || !hard_limit.is_finite() || hard_limit < 0.0 {
+            anyhow::bail!("invalid budget reservation");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let spent: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(amount_usd),0) FROM cost_ledger WHERE run_id=?1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        let reserved: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NULL",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if spent + reserved + estimated > hard_limit + f64::EPSILON {
+            anyhow::bail!("budget reservation would exceed run hard limit");
+        }
+        let reservation_id = Uuid::now_v7();
+        tx.execute(
+            "INSERT INTO budget_reservations(
+                reservation_id,run_id,estimated_usd,actual_usd,created_at,settled_at
+             ) VALUES(?1,?2,?3,NULL,?4,NULL)",
+            params![reservation_id.to_string(), run_id.to_string(), estimated, Utc::now().to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(reservation_id)
+    }
+
+    pub fn budget_reservation(&self, reservation_id: Uuid) -> Result<Option<BudgetReservationRecord>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT run_id,estimated_usd,actual_usd,created_at,settled_at
+             FROM budget_reservations WHERE reservation_id=?1",
+            [reservation_id.to_string()],
+            |row| {
+                let run_id: String = row.get(0)?;
+                let created_at: String = row.get(3)?;
+                let settled_at: Option<String> = row.get(4)?;
+                Ok((run_id, row.get::<_, f64>(1)?, row.get::<_, Option<f64>>(2)?, created_at, settled_at))
+            },
+        )
+        .optional()?
+        .map(|(run_id, estimated_usd, actual_usd, created_at, settled_at)| -> Result<_> {
+            Ok(BudgetReservationRecord {
+                reservation_id,
+                run_id: Uuid::parse_str(&run_id)?,
+                estimated_usd,
+                actual_usd,
+                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                settled_at: settled_at
+                    .map(|value| DateTime::parse_from_rfc3339(&value).map(|date| date.with_timezone(&Utc)))
+                    .transpose()?,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn record_settled_cost(&self, reservation_id: Uuid, actual: f64) -> Result<BudgetReservationRecord> {
+        if !actual.is_finite() || actual < 0.0 {
+            anyhow::bail!("invalid settled cost");
+        }
+        let reservation = self
+            .budget_reservation(reservation_id)?
+            .context("budget reservation not found")?;
+        if reservation.settled_at.is_some() {
+            anyhow::bail!("budget reservation is already settled");
+        }
+        let run = self.get_run(reservation.run_id)?.context("run not found")?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let spent: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(amount_usd),0) FROM cost_ledger WHERE run_id=?1",
+            [reservation.run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if spent + actual > run.budget.hard_limit + f64::EPSILON {
+            anyhow::bail!("budget settlement would exceed run hard limit");
+        }
+        let settled_at = Utc::now();
+        tx.execute(
+            "UPDATE budget_reservations SET actual_usd=?2,settled_at=?3
+             WHERE reservation_id=?1 AND settled_at IS NULL",
+            params![reservation_id.to_string(), actual, settled_at.to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(BudgetReservationRecord {
+            actual_usd: Some(actual),
+            settled_at: Some(settled_at),
+            ..reservation
+        })
+    }
+
+    pub fn budget_usage(&self, run_id: Uuid) -> Result<(f64, f64)> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let reserved: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NULL",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        let settled: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NOT NULL",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok((reserved, settled))
     }
 
     pub fn memory_put(
