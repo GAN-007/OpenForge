@@ -1,6 +1,12 @@
+mod extended;
+mod services;
+
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -19,7 +25,10 @@ use openforge_protocol::{
 };
 use openforge_search::SearchIndex;
 use openforge_symbols::SymbolGraph;
+use openforge_team::{Permission, Principal};
 use openforge_telemetry::TelemetryRegistry;
+use services::ServiceHub;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -43,12 +52,36 @@ struct Args {
 }
 
 #[derive(Clone)]
-struct AppState {
-    engine: Arc<Engine>,
-    artifacts: ArtifactStore,
-    telemetry: TelemetryRegistry,
-    api_token: Option<Arc<str>>,
-    started_at: Instant,
+pub(crate) struct AppState {
+    pub(crate) engine: Arc<Engine>,
+    pub(crate) artifacts: ArtifactStore,
+    pub(crate) telemetry: TelemetryRegistry,
+    pub(crate) api_token: Option<Arc<str>>,
+    pub(crate) services: Arc<ServiceHub>,
+    pub(crate) started_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthContext {
+    pub(crate) subject: String,
+    pub(crate) principal: Option<Principal>,
+    pub(crate) local_owner: bool,
+}
+
+impl AuthContext {
+    pub(crate) fn require(&self, permission: Permission) -> Result<()> {
+        if self.local_owner {
+            return Ok(());
+        }
+        self.principal
+            .as_ref()
+            .context("authenticated principal unavailable")?
+            .require(permission)
+    }
+
+    pub(crate) fn workspace_id(&self) -> Option<Uuid> {
+        self.principal.as_ref().map(|principal| principal.workspace_id)
+    }
 }
 
 #[tokio::main]
@@ -63,6 +96,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = OpenForgeConfig::load(&args.config).unwrap_or_default();
     let artifacts = ArtifactStore::open(&config.artifact_dir)?;
+    let services = Arc::new(ServiceHub::new(&config)?);
     let api_token = std::env::var("OPENFORGE_API_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
@@ -74,6 +108,7 @@ async fn main() -> Result<()> {
         artifacts,
         telemetry: TelemetryRegistry::default(),
         api_token,
+        services,
         started_at: Instant::now(),
     };
 
@@ -86,6 +121,8 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/rpc", post(rpc))
+        .route("/v1/terminal/{id}/ws", get(terminal_ws))
+        .route("/v1/runs/{run_id}/events/ws", get(run_events_ws))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state.clone());
@@ -117,16 +154,35 @@ async fn rpc(
 ) -> impl IntoResponse {
     let id = request.id.clone();
 
-    if let Err(error) = authorize(&state, &headers) {
-        state.telemetry.increment("rpc.unauthorized", 1);
+    let auth = match authorize(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            state.telemetry.increment("rpc.unauthorized", 1);
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(RpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: -32001,
+                        message: error.to_string(),
+                        data: None,
+                    }),
+                }),
+            );
+        }
+    };
+    if let Err(error) = authorize_method(&auth, &request.method) {
+        state.telemetry.increment("rpc.forbidden", 1);
         return (
-            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
             Json(RpcResponse {
                 jsonrpc: "2.0".into(),
                 id,
                 result: None,
                 error: Some(RpcError {
-                    code: -32001,
+                    code: -32003,
                     message: error.to_string(),
                     data: None,
                 }),
@@ -138,7 +194,7 @@ async fn rpc(
     let started = Instant::now();
     state.telemetry.increment("rpc.calls", 1);
 
-    let result = handle(&state, request).await;
+    let result = handle(&state, &auth, request).await;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     state.telemetry.observe("rpc.latency_ms", elapsed_ms);
 
@@ -181,7 +237,7 @@ async fn rpc(
     }
 }
 
-async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
+async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Result<Value> {
     match request.method.as_str() {
         "initialize" => {
             let capabilities = [
@@ -493,7 +549,15 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "telemetry/snapshot" => Ok(serde_json::to_value(state.telemetry.snapshot())?),
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
-        _ => anyhow::bail!("unknown RPC method {}", request.method),
+        _ => {
+            if let Some(value) =
+                extended::handle_extended(state, auth, &request.method, &request.params).await?
+            {
+                Ok(value)
+            } else {
+                anyhow::bail!("unknown RPC method {}", request.method)
+            }
+        }
     }
 }
 
@@ -577,23 +641,80 @@ fn string_array(params: &Value, field: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<()> {
-    let Some(expected) = state.api_token.as_deref() else {
-        return Ok(());
-    };
-
+fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
     let authorization = headers
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .context("missing Authorization header")?;
+        .and_then(|value| value.to_str().ok());
     let supplied = authorization
-        .strip_prefix("Bearer ")
-        .context("Authorization must use Bearer scheme")?;
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    if !constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
-        anyhow::bail!("invalid API token");
+    if let Some(expected) = state.api_token.as_deref() {
+        if let Some(supplied) = supplied {
+            if constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
+                return Ok(AuthContext {
+                    subject: "local-owner".into(),
+                    principal: None,
+                    local_owner: true,
+                });
+            }
+            if let Some(principal) = state.services.team.authenticate(supplied)? {
+                return Ok(AuthContext {
+                    subject: principal.identity.subject.clone(),
+                    principal: Some(principal),
+                    local_owner: false,
+                });
+            }
+        }
+        anyhow::bail!("valid Bearer authorization is required");
     }
-    Ok(())
+
+    if let Some(supplied) = supplied {
+        if let Some(principal) = state.services.team.authenticate(supplied)? {
+            return Ok(AuthContext {
+                subject: principal.identity.subject.clone(),
+                principal: Some(principal),
+                local_owner: false,
+            });
+        }
+        anyhow::bail!("invalid Bearer token");
+    }
+
+    Ok(AuthContext {
+        subject: "local-owner".into(),
+        principal: None,
+        local_owner: true,
+    })
+}
+
+fn authorize_method(auth: &AuthContext, method: &str) -> Result<()> {
+    if auth.local_owner {
+        return Ok(());
+    }
+    let permission = if method.starts_with("team/") {
+        Permission::ManageMembers
+    } else if method.starts_with("plugin/") || method.starts_with("worker/register") {
+        Permission::ManageWorkspace
+    } else if method.starts_with("policy/") && method != "policy/evaluate" {
+        Permission::ManagePolicy
+    } else if method.starts_with("run/execute")
+        || method.starts_with("run/create")
+        || method.starts_with("run/plan")
+        || method.starts_with("terminal/")
+        || method.starts_with("worker/")
+        || method.starts_with("thread/")
+        || method.starts_with("approval/")
+        || method.starts_with("debug/")
+        || method.starts_with("database/")
+        || method.starts_with("devops/")
+        || method.starts_with("edit/")
+    {
+        Permission::Execute
+    } else {
+        Permission::Read
+    };
+    auth.require(permission)
 }
 
 fn constant_time_eq(expected: &[u8], supplied: &[u8]) -> bool {
