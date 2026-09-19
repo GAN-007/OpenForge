@@ -11,3 +11,4 @@ openforge-protocol = { path = "../openforge-protocol" }
 serde.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+walkdir.workspace = true
