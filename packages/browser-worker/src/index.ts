@@ -200,14 +200,15 @@ async function newContext(params: Record<string, unknown>) {
     typeof params.har_path === "string" && params.har_path
       ? { path: params.har_path, mode: "full" as const, content: "embed" as const }
       : undefined;
-  context = await activeBrowser.newContext({
-    viewport,
-    locale: typeof params.locale === "string" ? params.locale : undefined,
-    userAgent:
-      typeof params.user_agent === "string" ? params.user_agent : undefined,
-    recordVideo,
-    recordHar,
-  });
+  const options: Parameters<Browser["newContext"]>[0] = {};
+  if (viewport) options.viewport = viewport;
+  if (typeof params.locale === "string") options.locale = params.locale;
+  if (typeof params.user_agent === "string") {
+    options.userAgent = params.user_agent;
+  }
+  if (recordVideo) options.recordVideo = recordVideo;
+  if (recordHar) options.recordHar = recordHar;
+  context = await activeBrowser.newContext(options);
   attachContextListeners(context);
   const created = await createPage(context);
   return { page_id: created.id };
