@@ -11,9 +11,10 @@ use openforge_search::SearchIndex;
 use openforge_symbols::SymbolGraph;
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
-    AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider,
-    FabricProvider, GeminiConfig, GeminiProvider, ModelProvider, ModelRouter,
-    OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+    AnthropicConfig, AnthropicProvider, AzureOpenAiConfig, AzureOpenAiProvider,
+    BedrockCliConfig, BedrockCliProvider, FabricProvider, GeminiConfig, GeminiProvider,
+    ModelProvider, ModelRouter, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+    VertexGeminiConfig, VertexGeminiProvider,
 };
 use openforge_policy::AgentPolicy;
 use openforge_protocol::{
@@ -149,6 +150,56 @@ impl Engine {
                             models,
                         },
                     )));
+                }
+                "azure-openai" => {
+                    let env = provider
+                        .api_key_env
+                        .as_ref()
+                        .context("Azure OpenAI provider requires api_key_env")?;
+                    let api_key =
+                        std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(AzureOpenAiProvider::new(
+                        AzureOpenAiConfig {
+                            provider_name: provider.name.clone(),
+                            endpoint: provider.base_url.clone(),
+                            deployment: provider
+                                .deployment
+                                .clone()
+                                .context("Azure OpenAI provider requires deployment")?,
+                            api_version: provider
+                                .api_version
+                                .clone()
+                                .unwrap_or_else(|| "2024-10-21".into()),
+                            api_key,
+                            models,
+                        },
+                    )?));
+                }
+                "vertex-gemini" => {
+                    let env = provider
+                        .access_token_env
+                        .as_ref()
+                        .context("Vertex Gemini provider requires access_token_env")?;
+                    let access_token =
+                        std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(VertexGeminiProvider::new(
+                        VertexGeminiConfig {
+                            provider_name: provider.name.clone(),
+                            project: provider
+                                .project
+                                .clone()
+                                .context("Vertex Gemini provider requires project")?,
+                            location: provider
+                                .location
+                                .clone()
+                                .or_else(|| provider.region.clone())
+                                .unwrap_or_else(|| "us-central1".into()),
+                            access_token,
+                            base_url: (!provider.base_url.trim().is_empty())
+                                .then(|| provider.base_url.clone()),
+                            models,
+                        },
+                    )?));
                 }
                 other => bail!("unsupported provider kind {other}"),
             }
