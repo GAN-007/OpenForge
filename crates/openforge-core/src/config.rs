@@ -13,8 +13,12 @@ pub struct OpenForgeConfig {
     pub worktree_dir: String,
     #[serde(default = "default_parallel")]
     pub max_parallel_agents: usize,
+    #[serde(default = "default_agent_dir")]
+    pub agent_dir: String,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    pub model_profiles: BTreeMap<String, ModelProfileConfig>,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
@@ -27,6 +31,7 @@ fn default_state_db() -> String { ".openforge/state.db".into() }
 fn default_artifact_dir() -> String { ".openforge/artifacts".into() }
 fn default_worktree_dir() -> String { ".openforge/worktrees".into() }
 fn default_parallel() -> usize { 4 }
+fn default_agent_dir() -> String { "config/agents".into() }
 
 impl Default for OpenForgeConfig {
     fn default() -> Self {
@@ -35,7 +40,9 @@ impl Default for OpenForgeConfig {
             artifact_dir: default_artifact_dir(),
             worktree_dir: default_worktree_dir(),
             max_parallel_agents: default_parallel(),
+            agent_dir: default_agent_dir(),
             providers: vec![],
+            model_profiles: BTreeMap::new(),
             mcp_servers: vec![],
             browser: BrowserWorkerConfig::default(),
             environment: BTreeMap::new(),
@@ -93,6 +100,15 @@ fn default_browser_timeout() -> u64 { 60 }
 fn default_browser_program() -> String { "node".into() }
 fn default_browser_args() -> Vec<String> {
     vec!["packages/browser-worker/dist/index.js".into()]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelProfileConfig {
+    #[serde(default)]
+    pub preferred_model_families: Vec<String>,
+    #[serde(default)]
+    pub excluded_model_families: Vec<String>,
+    pub max_latency_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
