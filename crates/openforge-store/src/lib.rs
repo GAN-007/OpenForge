@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use openforge_protocol::{Actor, Budget, EventEnvelope, Run, RunStatus, SecretLeaseDescriptor, TaskNode};
+use openforge_protocol::{Actor, EventEnvelope, Run, RunStatus, SecretLeaseDescriptor, TaskNode};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -720,7 +720,13 @@ impl Store {
             [run_id.to_string()],
             |row| row.get(0),
         )?;
-        if spent + reserved + estimated > hard_limit + f64::EPSILON {
+        let settled: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NOT NULL",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if spent + settled + reserved + estimated > hard_limit + f64::EPSILON {
             anyhow::bail!("budget reservation would exceed run hard limit");
         }
         let reservation_id = Uuid::now_v7();
@@ -781,7 +787,19 @@ impl Store {
             [reservation.run_id.to_string()],
             |row| row.get(0),
         )?;
-        if spent + actual > run.budget.hard_limit + f64::EPSILON {
+        let settled: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NOT NULL AND reservation_id<>?2",
+            params![reservation.run_id.to_string(), reservation_id.to_string()],
+            |row| row.get(0),
+        )?;
+        let pending: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0) FROM budget_reservations
+             WHERE run_id=?1 AND settled_at IS NULL AND reservation_id<>?2",
+            params![reservation.run_id.to_string(), reservation_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if spent + settled + pending + actual > run.budget.hard_limit + f64::EPSILON {
             anyhow::bail!("budget settlement would exceed run hard limit");
         }
         let settled_at = Utc::now();
