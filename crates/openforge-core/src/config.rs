@@ -22,6 +22,8 @@ pub struct OpenForgeConfig {
     #[serde(default)]
     pub browser: BrowserWorkerConfig,
     #[serde(default)]
+    pub kubernetes: KubernetesRunnerConfig,
+    #[serde(default)]
     pub environment: BTreeMap<String, String>,
 }
 
@@ -42,6 +44,7 @@ impl Default for OpenForgeConfig {
             providers: vec![],
             mcp_servers: vec![],
             browser: BrowserWorkerConfig::default(),
+            kubernetes: KubernetesRunnerConfig::default(),
             environment: BTreeMap::new(),
         }
     }
@@ -70,6 +73,30 @@ pub struct McpServerConfig {
     #[serde(default = "default_protocol_bytes")]
     pub max_response_bytes: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesRunnerConfig {
+    #[serde(default = "default_kubernetes_namespace")]
+    pub namespace: String,
+    #[serde(default = "default_kubernetes_image")]
+    pub image: String,
+    #[serde(default = "default_kubernetes_wait_seconds")]
+    pub wait_seconds: u64,
+}
+
+impl Default for KubernetesRunnerConfig {
+    fn default() -> Self {
+        Self {
+            namespace: default_kubernetes_namespace(),
+            image: default_kubernetes_image(),
+            wait_seconds: default_kubernetes_wait_seconds(),
+        }
+    }
+}
+
+fn default_kubernetes_namespace() -> String { "default".into() }
+fn default_kubernetes_image() -> String { "ghcr.io/gan-007/openforge-runner:latest".into() }
+fn default_kubernetes_wait_seconds() -> u64 { 90 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserWorkerConfig {
