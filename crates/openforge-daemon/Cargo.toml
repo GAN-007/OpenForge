@@ -24,3 +24,18 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+openforge-collab = { path = "../openforge-collab" }
+openforge-dap = { path = "../openforge-dap" }
+openforge-debugger = { path = "../openforge-debugger" }
+openforge-devtools = { path = "../openforge-devtools" }
+openforge-edits = { path = "../openforge-edits" }
+openforge-knowledge = { path = "../openforge-knowledge" }
+openforge-lsp = { path = "../openforge-lsp" }
+openforge-memory = { path = "../openforge-memory" }
+openforge-plugins = { path = "../openforge-plugins" }
+openforge-registry = { path = "../openforge-registry" }
+openforge-team = { path = "../openforge-team" }
+openforge-terminal = { path = "../openforge-terminal" }
+openforge-workers = { path = "../openforge-workers" }
+serde.workspace = true
+url.workspace = true
