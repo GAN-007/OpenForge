@@ -54,22 +54,33 @@ export function registerEditPredictionProvider(
 
         const items = prediction.edits
           .filter((edit) => edit.file_path === path)
-          .map((edit) => ({
-            insertText: edit.new_text,
-            range: new monaco.Range(
-              edit.range.start_line + 1,
-              edit.range.start_column + 1,
-              edit.range.end_line + 1,
-              edit.range.end_column + 1,
-            ),
-            command: prediction.next_cursor
-              ? {
-                  id: "openforge.predictionAccepted",
-                  title: "OpenForge next edit",
-                  arguments: [prediction.next_cursor],
-                }
-              : undefined,
-          }));
+          .map((edit) => {
+            const item: {
+              insertText: string;
+              range: InstanceType<Monaco["Range"]>;
+              command?: {
+                id: string;
+                title: string;
+                arguments: unknown[];
+              };
+            } = {
+              insertText: edit.new_text,
+              range: new monaco.Range(
+                edit.range.start_line + 1,
+                edit.range.start_column + 1,
+                edit.range.end_line + 1,
+                edit.range.end_column + 1,
+              ),
+            };
+            if (prediction.next_cursor) {
+              item.command = {
+                id: "openforge.predictionAccepted",
+                title: "OpenForge next edit",
+                arguments: [prediction.next_cursor],
+              };
+            }
+            return item;
+          });
 
         return { items, dispose() {} };
       } catch (error) {
