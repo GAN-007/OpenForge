@@ -1,4 +1,6 @@
-use crate::{AgentLoop, OpenForgeConfig, ToolBus};
+use crate::{AgentLoop, OpenForgeConfig, RunnerBackend, ToolBus};
+use openforge_acp::AcpAgentClient;
+use openforge_cost::{BudgetGuard, Reservation};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -18,7 +20,7 @@ use openforge_protocol::{
     TaskBudget, TaskNode, TaskRequirements, TaskStatus,
 };
 use openforge_sandbox::{
-    DockerBackend, ExecRequest, LocalProcessBackend, SandboxBackend,
+    DockerBackend, ExecRequest, KubernetesBackend, LocalProcessBackend, SandboxBackend,
     SandboxPolicy,
 };
 use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
@@ -47,6 +49,11 @@ pub struct Engine {
     pub store: Store,
     fabric: Arc<dyn ModelProvider>,
     provider_names: Vec<String>,
+    pub tool_bus: Arc<ToolBus>,
+    pub acp_clients: tokio::sync::Mutex<std::collections::HashMap<Uuid, AcpAgentClient>>,
+    pub budget_guards: tokio::sync::Mutex<std::collections::HashMap<Uuid, BudgetGuard>>,
+    pub budget_reservations:
+        tokio::sync::Mutex<std::collections::HashMap<Uuid, Reservation>>,
 }
 
 struct TaskExecution {
@@ -151,12 +158,20 @@ impl Engine {
         let fabric_impl = Arc::new(FabricProvider::new(providers)?);
         let provider_names = fabric_impl.provider_names();
         let fabric: Arc<dyn ModelProvider> = fabric_impl;
+        let tool_bus = Arc::new(ToolBus::new(
+            config.mcp_servers.clone(),
+            config.browser.clone(),
+        )?);
 
         Ok(Self {
             config,
             store,
             fabric,
             provider_names,
+            tool_bus,
+            acp_clients: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            budget_guards: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            budget_reservations: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -220,6 +235,16 @@ impl Engine {
 
     pub async fn plan_run(&self, repo: &Path, run: &Run) -> Result<Vec<TaskNode>> {
         let index = RepositoryIndex::build(repo)?;
+        let relevant = index.relevant_files(&run.objective, 40);
+        let mut relevance = String::new();
+        for path in &relevant {
+            if let Some(record) = index.file(path) {
+                relevance.push_str(&format!(
+                    "- `{}` ({} lines, {} bytes, language: {})\n",
+                    record.path, record.lines, record.bytes, record.language
+                ));
+            }
+        }
         let summary = serde_json::to_string(&index)?;
         let planning_budget = (run.budget.remaining() * 0.20).max(0.05);
 
@@ -235,8 +260,8 @@ impl Engine {
                 ChatMessage {
                     role: "user".into(),
                     content: format!(
-                        "OBJECTIVE\n{}\n\nREPOSITORY INDEX\n{}",
-                        run.objective, summary
+                        "OBJECTIVE\n{}\n\nRELEVANT FILES\n{}\nREPOSITORY INDEX\n{}",
+                        run.objective, relevance, summary
                     ),
                 },
             ],
@@ -379,11 +404,26 @@ impl Engine {
         policy: AgentPolicy,
         use_docker: bool,
     ) -> Result<String> {
+        let runner = if use_docker {
+            RunnerBackend::Docker
+        } else {
+            self.config.runner.backend
+        };
+        self.execute_run_with_backend(repo, run_id, policy, runner).await
+    }
+
+    pub async fn execute_run_with_backend(
+        &self,
+        repo: &Path,
+        run_id: Uuid,
+        policy: AgentPolicy,
+        runner: RunnerBackend,
+    ) -> Result<String> {
         let run = self.store.get_run(run_id)?.context("run not found")?;
         let mut tasks = self.store.list_tasks(run_id)?;
         validate_dag(&tasks)?;
 
-        if run.autonomy == AutonomyLevel::Autonomous && !use_docker {
+        if run.autonomy == AutonomyLevel::Autonomous && runner == RunnerBackend::Local {
             bail!("autonomous mode requires an isolated sandbox backend");
         }
 
@@ -460,7 +500,7 @@ impl Engine {
                     &run,
                     task,
                     policy.clone(),
-                    use_docker,
+                    runner,
                     &base_sha,
                 )
             }))
@@ -484,7 +524,7 @@ impl Engine {
                         };
 
                     if let Err(error) = self
-                        .verify_acceptance(&integration, &execution.task, use_docker)
+                        .verify_acceptance(&integration, &execution.task, runner)
                         .await
                     {
                         git.reset_hard(&integration, &pre_integration_sha).await?;
@@ -677,7 +717,7 @@ impl Engine {
         run: &Run,
         task: &TaskNode,
         policy: AgentPolicy,
-        use_docker: bool,
+        runner: RunnerBackend,
         base_sha: &str,
     ) -> Result<TaskExecution> {
         let mut current = task.clone();
@@ -701,7 +741,7 @@ impl Engine {
         )?;
 
         let workspace = git.create_task_workspace(task.id, base_sha).await?;
-        let backend = self.backend(use_docker);
+        let backend = self.backend(runner)?;
         let resource_limits = &current.requirements.resources;
         let network_enabled = current
             .requirements
@@ -825,13 +865,31 @@ impl Engine {
         Ok(execution)
     }
 
-    fn backend(&self, use_docker: bool) -> Arc<dyn SandboxBackend> {
-        if use_docker {
-            Arc::new(DockerBackend {
-                image: "ghcr.io/gan-007/openforge-runner:latest".into(),
-            })
-        } else {
-            Arc::new(LocalProcessBackend)
+    fn backend(&self, runner: RunnerBackend) -> Result<Arc<dyn SandboxBackend>> {
+        match runner {
+            RunnerBackend::Local => Ok(Arc::new(LocalProcessBackend)),
+            RunnerBackend::Docker => Ok(Arc::new(DockerBackend {
+                image: self.config.runner.image.clone(),
+            })),
+            RunnerBackend::Kubernetes => {
+                let kubernetes = &self.config.runner.kubernetes;
+                let pvc_claim = kubernetes
+                    .pvc_claim
+                    .clone()
+                    .context("runner.kubernetes.pvc_claim is required")?;
+                let workspace_root = kubernetes
+                    .workspace_root
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(&self.config.worktree_dir));
+                Ok(Arc::new(KubernetesBackend {
+                    image: self.config.runner.image.clone(),
+                    namespace: kubernetes.namespace.clone(),
+                    pvc_claim,
+                    workspace_root,
+                    service_account: kubernetes.service_account.clone(),
+                    kubectl_context: kubernetes.context.clone(),
+                }))
+            }
         }
     }
 
@@ -873,13 +931,13 @@ impl Engine {
         &self,
         workspace: &GitWorkspace,
         task: &TaskNode,
-        use_docker: bool,
+        runner: RunnerBackend,
     ) -> Result<()> {
         if task.acceptance.is_empty() {
             return Ok(());
         }
 
-        let backend = self.backend(use_docker);
+        let backend = self.backend(runner)?;
         let lease = backend
             .create(&workspace.path, SandboxPolicy::default())
             .await?;

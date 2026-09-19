@@ -7,7 +7,9 @@ license.workspace=true
 anyhow.workspace=true
 chrono.workspace=true
 futures-util.workspace=true
+openforge-acp={path="../openforge-acp"}
 openforge-browser={path="../openforge-browser"}
+openforge-cost={path="../openforge-cost"}
 openforge-context={path="../openforge-context"}
 openforge-git={path="../openforge-git"}
 openforge-mcp={path="../openforge-mcp"}

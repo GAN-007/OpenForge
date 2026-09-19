@@ -4,13 +4,14 @@ use openforge_protocol::SandboxSecurityProfile;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    fs,
     path::{Component, Path, PathBuf},
     process::Stdio,
 };
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{timeout, Duration},
+    time::{sleep, timeout, Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -164,6 +165,397 @@ impl SandboxBackend for LocalProcessBackend {
 
 pub struct DockerBackend {
     pub image: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct KubernetesBackend {
+    pub image: String,
+    pub namespace: String,
+    pub pvc_claim: String,
+    pub workspace_root: PathBuf,
+    pub service_account: Option<String>,
+    pub kubectl_context: Option<String>,
+}
+
+impl KubernetesBackend {
+    fn kubectl_command(&self, args: &[String]) -> Command {
+        let mut command = Command::new("kubectl");
+        if let Some(context) = &self.kubectl_context {
+            command.arg("--context").arg(context);
+        }
+        command.arg("--namespace").arg(&self.namespace);
+        command.args(args);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command
+    }
+
+    async fn kubectl(
+        &self,
+        args: &[String],
+        duration: Duration,
+        max_stdout: u64,
+        max_stderr: u64,
+    ) -> Result<ExecResult> {
+        run_bounded(
+            self.kubectl_command(args),
+            duration.as_secs().max(1),
+            max_stdout,
+            max_stderr,
+        )
+        .await
+    }
+
+    async fn cleanup_job(&self, job_name: &str, deny_network: bool) {
+        let _ = self
+            .kubectl(
+                &[
+                    "delete".into(),
+                    "job".into(),
+                    job_name.into(),
+                    "--ignore-not-found=true".into(),
+                    "--wait=false".into(),
+                ],
+                Duration::from_secs(20),
+                1024 * 1024,
+                1024 * 1024,
+            )
+            .await;
+        if deny_network {
+            let policy_name = format!("{job_name}-deny-egress");
+            let _ = self
+                .kubectl(
+                    &[
+                        "delete".into(),
+                        "networkpolicy".into(),
+                        policy_name,
+                        "--ignore-not-found=true".into(),
+                        "--wait=false".into(),
+                    ],
+                    Duration::from_secs(20),
+                    1024 * 1024,
+                    1024 * 1024,
+                )
+                .await;
+        }
+    }
+}
+
+#[async_trait]
+impl SandboxBackend for KubernetesBackend {
+    fn name(&self) -> &str {
+        "kubernetes"
+    }
+
+    async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
+        policy.validate()?;
+        if self.image.trim().is_empty()
+            || self.namespace.trim().is_empty()
+            || self.pvc_claim.trim().is_empty()
+        {
+            bail!("kubernetes backend requires image, namespace, and pvc_claim");
+        }
+
+        let canonical_workspace =
+            workspace.canonicalize().context("workspace does not exist")?;
+        let canonical_root = self
+            .workspace_root
+            .canonicalize()
+            .context("kubernetes workspace_root does not exist")?;
+        if !canonical_workspace.starts_with(&canonical_root) {
+            bail!(
+                "workspace {} is outside kubernetes workspace_root {}",
+                canonical_workspace.display(),
+                canonical_root.display()
+            );
+        }
+
+        let check = self
+            .kubectl(
+                &[
+                    "get".into(),
+                    "pvc".into(),
+                    self.pvc_claim.clone(),
+                    "-o".into(),
+                    "name".into(),
+                ],
+                Duration::from_secs(15),
+                1024 * 1024,
+                1024 * 1024,
+            )
+            .await
+            .context("kubectl or Kubernetes API unavailable")?;
+        if check.exit_code != 0 {
+            bail!(
+                "kubernetes PVC {} is unavailable in namespace {}: {}",
+                self.pvc_claim,
+                self.namespace,
+                check.stderr
+            );
+        }
+
+        Ok(SandboxLease {
+            id: Uuid::now_v7(),
+            backend: self.name().into(),
+            workspace: canonical_workspace,
+            policy,
+        })
+    }
+
+    async fn exec(&self, lease: &SandboxLease, request: ExecRequest) -> Result<ExecResult> {
+        validate_exec_request(&request)?;
+        let workspace_root = self.workspace_root.canonicalize()?;
+        let workspace_relative = lease
+            .workspace
+            .strip_prefix(&workspace_root)
+            .context("workspace is outside Kubernetes workspace root")?;
+        let workspace_subpath = workspace_relative
+            .to_string_lossy()
+            .replace('\\', "/");
+        let relative_cwd = normalized_relative(&request.cwd)?;
+        let working_dir = if relative_cwd.as_os_str().is_empty() {
+            "/workspace".to_string()
+        } else {
+            format!("/workspace/{}", relative_cwd.to_string_lossy().replace('\\', "/"))
+        };
+        let job_name = format!("openforge-{}", Uuid::now_v7().simple());
+        let deny_network = !lease.policy.network_enabled;
+
+        let mut environment = lease.policy.environment.clone();
+        for (key, value) in &request.environment {
+            validate_env_key(key)?;
+            environment.insert(key.clone(), value.clone());
+        }
+        let environment = environment
+            .into_iter()
+            .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+            .collect::<Vec<_>>();
+
+        let mut volume_mount = serde_json::json!({
+            "name": "workspace",
+            "mountPath": "/workspace"
+        });
+        if !workspace_subpath.is_empty() {
+            volume_mount["subPath"] = serde_json::Value::String(workspace_subpath);
+        }
+
+        let mut pod_spec = serde_json::json!({
+            "automountServiceAccountToken": false,
+            "restartPolicy": "Never",
+            "securityContext": {
+                "runAsNonRoot": true,
+                "seccompProfile": {"type": "RuntimeDefault"}
+            },
+            "containers": [{
+                "name": "runner",
+                "image": self.image,
+                "workingDir": working_dir,
+                "command": request.argv,
+                "env": environment,
+                "resources": {
+                    "limits": {
+                        "cpu": lease.policy.cpus.to_string(),
+                        "memory": format!("{}Mi", lease.policy.memory_mb)
+                    },
+                    "requests": {
+                        "cpu": lease.policy.cpus.min(1.0).to_string(),
+                        "memory": format!("{}Mi", lease.policy.memory_mb.min(1024))
+                    }
+                },
+                "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "readOnlyRootFilesystem": lease.policy.security.read_only_root,
+                    "capabilities": {"drop": ["ALL"]}
+                },
+                "volumeMounts": [
+                    volume_mount,
+                    {"name": "tmp", "mountPath": "/tmp"}
+                ]
+            }],
+            "volumes": [
+                {
+                    "name": "workspace",
+                    "persistentVolumeClaim": {"claimName": self.pvc_claim}
+                },
+                {
+                    "name": "tmp",
+                    "emptyDir": {
+                        "sizeLimit": format!("{}Mi", lease.policy.memory_mb.clamp(64, 1024))
+                    }
+                }
+            ]
+        });
+        if let Some(service_account) = &self.service_account {
+            pod_spec["serviceAccountName"] =
+                serde_json::Value::String(service_account.clone());
+        }
+
+        let job = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": job_name,
+                "labels": {"openforge.sandbox": job_name}
+            },
+            "spec": {
+                "backoffLimit": 0,
+                "ttlSecondsAfterFinished": 300,
+                "activeDeadlineSeconds": request.timeout_seconds.max(1) + 30,
+                "template": {
+                    "metadata": {"labels": {"openforge.sandbox": job_name}},
+                    "spec": pod_spec
+                }
+            }
+        });
+
+        let mut items = vec![job];
+        if deny_network {
+            items.push(serde_json::json!({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": format!("{job_name}-deny-egress")},
+                "spec": {
+                    "podSelector": {
+                        "matchLabels": {"openforge.sandbox": job_name}
+                    },
+                    "policyTypes": ["Egress"],
+                    "egress": []
+                }
+            }));
+        }
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "List",
+            "items": items
+        });
+
+        let manifest_path =
+            std::env::temp_dir().join(format!("openforge-kubernetes-{job_name}.json"));
+        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
+
+        let applied = self
+            .kubectl(
+                &[
+                    "apply".into(),
+                    "-f".into(),
+                    manifest_path.to_string_lossy().into_owned(),
+                ],
+                Duration::from_secs(30),
+                lease.policy.max_stdout_bytes,
+                lease.policy.max_stderr_bytes,
+            )
+            .await;
+        let _ = fs::remove_file(&manifest_path);
+        let applied = applied?;
+        if applied.exit_code != 0 {
+            self.cleanup_job(&job_name, deny_network).await;
+            bail!("failed to create Kubernetes sandbox job: {}", applied.stderr);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(request.timeout_seconds.max(1));
+        let mut exit_code = 1;
+        let mut timed_out = false;
+        loop {
+            if Instant::now() >= deadline {
+                timed_out = true;
+                exit_code = -1;
+                break;
+            }
+            let status = self
+                .kubectl(
+                    &[
+                        "get".into(),
+                        "job".into(),
+                        job_name.clone(),
+                        "-o".into(),
+                        "jsonpath={.status.succeeded}:{.status.failed}".into(),
+                    ],
+                    Duration::from_secs(10),
+                    1024 * 1024,
+                    1024 * 1024,
+                )
+                .await?;
+            if status.exit_code != 0 {
+                self.cleanup_job(&job_name, deny_network).await;
+                bail!("failed to query Kubernetes job status: {}", status.stderr);
+            }
+            let mut fields = status.stdout.trim().split(':');
+            let succeeded = fields
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            let failed = fields
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            if succeeded > 0 {
+                exit_code = 0;
+                break;
+            }
+            if failed > 0 {
+                exit_code = 1;
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+
+        let logs = self
+            .kubectl(
+                &[
+                    "logs".into(),
+                    format!("job/{job_name}"),
+                    "--all-containers=true".into(),
+                ],
+                Duration::from_secs(20),
+                lease.policy.max_stdout_bytes,
+                lease.policy.max_stderr_bytes,
+            )
+            .await
+            .unwrap_or(ExecResult {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: "unable to read Kubernetes job logs".into(),
+                timed_out: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            });
+
+        let mut stderr = logs.stderr;
+        if exit_code != 0 {
+            if let Ok(describe) = self
+                .kubectl(
+                    &["describe".into(), "job".into(), job_name.clone()],
+                    Duration::from_secs(20),
+                    lease.policy.max_stderr_bytes,
+                    lease.policy.max_stderr_bytes,
+                )
+                .await
+            {
+                if !describe.stdout.trim().is_empty() {
+                    if !stderr.is_empty() {
+                        stderr.push('\n');
+                    }
+                    stderr.push_str(&describe.stdout);
+                }
+            }
+        }
+
+        self.cleanup_job(&job_name, deny_network).await;
+        Ok(ExecResult {
+            exit_code,
+            stdout: logs.stdout,
+            stderr,
+            timed_out,
+            stdout_truncated: logs.stdout_truncated,
+            stderr_truncated: logs.stderr_truncated,
+        })
+    }
+
+    async fn destroy(&self, _lease: SandboxLease) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]

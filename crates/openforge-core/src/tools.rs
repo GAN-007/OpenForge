@@ -81,6 +81,46 @@ impl ToolBus {
         }
     }
 
+    pub async fn mcp_list_tools(&self, server_name: &str) -> Result<Value> {
+        let mut client = self.mcp_client(server_name).await?;
+        let result = async {
+            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            Ok::<Value, anyhow::Error>(serde_json::to_value(client.list_tools().await?)?)
+        }
+        .await;
+        finish_client(result, client.shutdown().await)
+    }
+
+    pub async fn mcp_list_resources(&self, server_name: &str) -> Result<Value> {
+        let mut client = self.mcp_client(server_name).await?;
+        let result = async {
+            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client.list_resources().await
+        }
+        .await;
+        finish_client(result, client.shutdown().await)
+    }
+
+    pub async fn mcp_read_resource(&self, server_name: &str, uri: &str) -> Result<Value> {
+        let mut client = self.mcp_client(server_name).await?;
+        let result = async {
+            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client.read_resource(uri).await
+        }
+        .await;
+        finish_client(result, client.shutdown().await)
+    }
+
+    pub async fn mcp_list_prompts(&self, server_name: &str) -> Result<Value> {
+        let mut client = self.mcp_client(server_name).await?;
+        let result = async {
+            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client.list_prompts().await
+        }
+        .await;
+        finish_client(result, client.shutdown().await)
+    }
+
     pub async fn browser_navigate(
         &self,
         url: &str,
@@ -143,6 +183,19 @@ impl ToolBus {
         Ok(())
     }
 
+    async fn mcp_client(&self, server_name: &str) -> Result<McpStdioClient> {
+        let server = self
+            .mcp_servers
+            .get(server_name)
+            .with_context(|| format!("unknown MCP server {server_name}"))?;
+        let mut config = McpProcessConfig::new(server.program.clone(), server.args.clone());
+        config.cwd = server.cwd.as_ref().map(PathBuf::from);
+        config.environment = server.environment.clone();
+        config.request_timeout = Duration::from_secs(server.timeout_seconds.max(1));
+        config.max_response_bytes = server.max_response_bytes.max(1024);
+        McpStdioClient::spawn_with_config(config).await
+    }
+
     async fn browser_client<'a>(
         &'a self,
         slot: &'a mut Option<BrowserClient>,
@@ -161,5 +214,14 @@ impl ToolBus {
             );
         }
         Ok(slot.as_mut().expect("browser initialized"))
+    }
+}
+
+
+fn finish_client<T>(result: Result<T>, shutdown: Result<()>) -> Result<T> {
+    match (result, shutdown) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error.context("MCP shutdown failed")),
+        (Err(error), _) => Err(error),
     }
 }
