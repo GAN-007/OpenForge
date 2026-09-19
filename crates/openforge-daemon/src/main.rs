@@ -12,7 +12,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64URL},
+    Engine as _,
+};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
@@ -862,7 +865,7 @@ fn authorize_websocket(state: &AppState, headers: &HeaderMap) -> Result<AuthCont
     if let Ok(auth) = authorize(state, headers) {
         return Ok(auth);
     }
-    let supplied = headers
+    let encoded = headers
         .get(header::SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| {
@@ -874,7 +877,14 @@ fn authorize_websocket(state: &AppState, headers: &HeaderMap) -> Result<AuthCont
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    authorize_token(state, supplied)
+    let decoded = encoded
+        .map(|value| BASE64URL.decode(value.as_bytes()))
+        .transpose()
+        .context("invalid WebSocket authentication token encoding")?
+        .map(|bytes| String::from_utf8(bytes).context("WebSocket token is not UTF-8"))
+        .transpose()?;
+
+    authorize_token(state, decoded.as_deref())
 }
 
 fn authorize_token(state: &AppState, supplied: Option<&str>) -> Result<AuthContext> {
