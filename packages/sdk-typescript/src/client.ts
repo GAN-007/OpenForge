@@ -360,7 +360,7 @@ export class OpenForgeClient {
   }
 
   predictEdits(input: EditPredictionInput, signal?: AbortSignal) {
-    return this.rpc<EditPrediction>("edit/predict", input, signal);
+    return this.rpc<EditPrediction>("edit/predict", { ...input }, signal);
   }
 
   listLanguageServers() {
@@ -583,7 +583,7 @@ export class OpenForgeClient {
   }
 
   putRichMemory(input: RichMemoryInput) {
-    return this.rpc<RichMemoryRecord>("memory/rich-put", input);
+    return this.rpc<RichMemoryRecord>("memory/rich-put", { ...input });
   }
 
   searchRichMemory(params: {
