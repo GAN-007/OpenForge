@@ -1,16 +1,14 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
+    io::{Read, Write},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, Command},
-    sync::{broadcast, Mutex, RwLock},
-};
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +17,8 @@ pub struct TerminalDescriptor {
     pub program: String,
     pub cwd: String,
     pub created_at: DateTime<Utc>,
+    pub rows: u16,
+    pub cols: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,9 +30,10 @@ pub struct TerminalEvent {
 }
 
 struct TerminalSession {
-    descriptor: TerminalDescriptor,
-    child: Arc<Mutex<Child>>,
-    stdin: Arc<Mutex<ChildStdin>>,
+    descriptor: StdMutex<TerminalDescriptor>,
+    master: StdMutex<Box<dyn MasterPty + Send>>,
+    writer: StdMutex<Box<dyn Write + Send>>,
+    child: StdMutex<Box<dyn portable_pty::Child + Send + Sync>>,
     output: broadcast::Sender<TerminalEvent>,
 }
 
@@ -49,81 +50,141 @@ impl TerminalManager {
         cwd: impl AsRef<Path>,
         environment: &BTreeMap<String, String>,
     ) -> Result<TerminalDescriptor> {
+        self.spawn_sized(program, args, cwd, environment, 30, 120).await
+    }
+
+    pub async fn spawn_sized(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: impl AsRef<Path>,
+        environment: &BTreeMap<String, String>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<TerminalDescriptor> {
         if program.trim().is_empty() {
             bail!("terminal program cannot be empty");
+        }
+        if rows == 0 || cols == 0 {
+            bail!("terminal rows and cols must be greater than zero");
         }
         let cwd = cwd
             .as_ref()
             .canonicalize()
             .context("terminal cwd does not exist")?;
+        for key in environment.keys() {
+            validate_env_key(key)?;
+        }
 
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .env_clear();
+        let program = program.to_string();
+        let arguments = args.to_vec();
+        let environment = environment.clone();
+        let cwd_for_spawn = cwd.clone();
+        let id = Uuid::now_v7();
+        let created_at = Utc::now();
 
-        for key in ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR"] {
-            if let Some(value) = std::env::var_os(key) {
+        let (master, writer, child, reader) = tokio::task::spawn_blocking(move || {
+            let pty_system = native_pty_system();
+            let pair = pty_system.openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })?;
+
+            let mut command = CommandBuilder::new(&program);
+            command.args(arguments);
+            command.cwd(cwd_for_spawn);
+            command.env_clear();
+
+            for key in ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+            command.env("TERM", "xterm-256color");
+            command.env("COLORTERM", "truecolor");
+            for (key, value) in environment {
                 command.env(key, value);
             }
-        }
-        for (key, value) in environment {
-            validate_env_key(key)?;
-            command.env(key, value);
-        }
-        command.env("TERM", "xterm-256color");
 
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("spawn terminal program {program}"))?;
-        let stdin = child.stdin.take().context("terminal stdin unavailable")?;
-        let stdout = child.stdout.take().context("terminal stdout unavailable")?;
-        let stderr = child.stderr.take().context("terminal stderr unavailable")?;
-        let (output, _) = broadcast::channel(2048);
+            let child = pair.slave.spawn_command(command)?;
+            drop(pair.slave);
+            let reader = pair.master.try_clone_reader()?;
+            let writer = pair.master.take_writer()?;
+            Ok::<_, anyhow::Error>((pair.master, writer, child, reader))
+        })
+        .await
+        .context("PTY spawn task failed")??;
 
         let descriptor = TerminalDescriptor {
-            id: Uuid::now_v7(),
-            program: program.to_string(),
+            id,
+            program: program.clone(),
             cwd: cwd.display().to_string(),
-            created_at: Utc::now(),
+            created_at,
+            rows,
+            cols,
         };
+        let (output, _) = broadcast::channel(4096);
         let session = Arc::new(TerminalSession {
-            descriptor: descriptor.clone(),
-            child: Arc::new(Mutex::new(child)),
-            stdin: Arc::new(Mutex::new(stdin)),
+            descriptor: StdMutex::new(descriptor.clone()),
+            master: StdMutex::new(master),
+            writer: StdMutex::new(writer),
+            child: StdMutex::new(child),
             output,
         });
+        spawn_reader(id, reader, session.output.clone());
 
-        spawn_reader(
-            descriptor.id,
-            "stdout",
-            stdout,
-            session.output.clone(),
-        );
-        spawn_reader(
-            descriptor.id,
-            "stderr",
-            stderr,
-            session.output.clone(),
-        );
-
-        self.sessions
-            .write()
-            .await
-            .insert(descriptor.id, session);
+        self.sessions.write().await.insert(id, session);
         Ok(descriptor)
     }
 
     pub async fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
+        if data.len() > 1024 * 1024 {
+            bail!("terminal input frame exceeds 1 MiB");
+        }
         let session = self.session(id).await?;
-        let mut stdin = session.stdin.lock().await;
-        stdin.write_all(data).await?;
-        stdin.flush().await?;
+        let bytes = data.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut writer = session
+                .writer
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal writer mutex poisoned"))?;
+            writer.write_all(&bytes)?;
+            writer.flush()?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("terminal write task failed")??;
+        Ok(())
+    }
+
+    pub async fn resize(&self, id: Uuid, rows: u16, cols: u16) -> Result<()> {
+        if rows == 0 || cols == 0 {
+            bail!("terminal rows and cols must be greater than zero");
+        }
+        let session = self.session(id).await?;
+        tokio::task::spawn_blocking(move || {
+            session
+                .master
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal master mutex poisoned"))?
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })?;
+            let mut descriptor = session
+                .descriptor
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal descriptor mutex poisoned"))?;
+            descriptor.rows = rows;
+            descriptor.cols = cols;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("terminal resize task failed")??;
         Ok(())
     }
 
@@ -136,21 +197,28 @@ impl TerminalManager {
         let Some(session) = session else {
             return Ok(false);
         };
-        let mut child = session.child.lock().await;
-        if child.id().is_some() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
+        tokio::task::spawn_blocking(move || {
+            let mut child = session
+                .child
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal child mutex poisoned"))?;
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("terminal close task failed")??;
         Ok(true)
     }
 
     pub async fn list(&self) -> Vec<TerminalDescriptor> {
-        self.sessions
-            .read()
-            .await
+        let sessions = self.sessions.read().await;
+        let mut descriptors = sessions
             .values()
-            .map(|session| session.descriptor.clone())
-            .collect()
+            .filter_map(|session| session.descriptor.lock().ok().map(|value| value.clone()))
+            .collect::<Vec<_>>();
+        descriptors.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+        descriptors
     }
 
     async fn session(&self, id: Uuid) -> Result<Arc<TerminalSession>> {
@@ -163,31 +231,31 @@ impl TerminalManager {
     }
 }
 
-fn spawn_reader<R>(
+fn spawn_reader(
     terminal_id: Uuid,
-    stream: &'static str,
-    mut reader: R,
+    mut reader: Box<dyn Read + Send>,
     sender: broadcast::Sender<TerminalEvent>,
-) where
-    R: AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut buffer = vec![0u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(count) => {
-                    let _ = sender.send(TerminalEvent {
-                        terminal_id,
-                        stream: stream.to_string(),
-                        data: String::from_utf8_lossy(&buffer[..count]).into_owned(),
-                        timestamp: Utc::now(),
-                    });
+) {
+    std::thread::Builder::new()
+        .name(format!("openforge-terminal-{terminal_id}"))
+        .spawn(move || {
+            let mut buffer = vec![0u8; 32 * 1024];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        let _ = sender.send(TerminalEvent {
+                            terminal_id,
+                            stream: "pty".to_string(),
+                            data: String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                            timestamp: Utc::now(),
+                        });
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
-        }
-    });
+        })
+        .ok();
 }
 
 fn validate_env_key(key: &str) -> Result<()> {
