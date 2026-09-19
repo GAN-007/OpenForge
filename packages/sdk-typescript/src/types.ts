@@ -366,6 +366,8 @@ export interface TerminalDescriptor {
   program: string;
   cwd: string;
   created_at: string;
+  rows: number;
+  cols: number;
 }
 
 export interface TerminalEvent {
