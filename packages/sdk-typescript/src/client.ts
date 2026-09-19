@@ -448,8 +448,18 @@ export class OpenForgeClient {
     args?: string[];
     cwd?: string;
     environment?: Record<string, string>;
+    rows?: number;
+    cols?: number;
   }) {
     return this.rpc<TerminalDescriptor>("terminal/spawn", params);
+  }
+
+  resizeTerminal(terminalId: string, rows: number, cols: number) {
+    return this.rpc<{ ok: boolean }>("terminal/resize", {
+      terminal_id: terminalId,
+      rows,
+      cols,
+    });
   }
 
   listTerminals() {
