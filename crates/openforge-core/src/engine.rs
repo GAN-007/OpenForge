@@ -1174,16 +1174,21 @@ impl Engine {
         let index = RepositoryIndex::build(&workspace.path)?;
         let search = SearchIndex::build(&workspace.path)?;
         let symbols = SymbolGraph::build(&workspace.path)?;
+        let knowledge = KnowledgeGraph::build(&workspace.path)?;
         let query = format!("{} {}", task.title, task.description);
 
         let lexical_hits = search.query(&query, 24);
         let symbol_hits = symbols.search(&query, 24);
+        let knowledge_hits = knowledge.find_symbols(&query, 24);
         let mut relevant = index.relevant_files(&query, 24);
 
         for hit in &lexical_hits {
             relevant.push(hit.path.clone());
         }
         for symbol in &symbol_hits {
+            relevant.push(symbol.path.clone());
+        }
+        for symbol in &knowledge_hits {
             relevant.push(symbol.path.clone());
         }
         relevant.sort();
@@ -1199,13 +1204,21 @@ impl Engine {
             "total_lines": index.total_lines,
             "languages": index.language_counts,
             "search_stats": search.stats(),
-            "symbol_stats": symbols.stats()
+            "symbol_stats": symbols.stats(),
+            "knowledge": {
+                "files_indexed": knowledge.files_indexed,
+                "nodes": knowledge.nodes.len(),
+                "edges": knowledge.edges.len(),
+                "git_history_files": knowledge.git_history.len()
+            }
         }))?);
 
         output.push_str("\n\nLEXICAL HITS\n");
         output.push_str(&serde_json::to_string(&lexical_hits)?);
         output.push_str("\n\nSYMBOL HITS\n");
         output.push_str(&serde_json::to_string(&symbol_hits)?);
+        output.push_str("\n\nTREE-SITTER KNOWLEDGE HITS\n");
+        output.push_str(&serde_json::to_string(&knowledge_hits)?);
 
         for relative in relevant {
             let path = workspace.path.join(&relative);
