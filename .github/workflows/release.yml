@@ -43,7 +43,7 @@ jobs:
       - run: ruff check python
       - run: mypy python/openforge_sdk
       - run: pytest python/tests
-      - run: cargo run -p openforge-evals --release -- --suite evals/market-readiness.json --output target/evals/market-readiness.json
+      - run: cargo run -p openforge-evals --release -- --root . --policy config/policies/development.yaml
 
   desktop:
     name: Desktop ${{ matrix.platform }}
