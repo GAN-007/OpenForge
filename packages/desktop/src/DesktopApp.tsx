@@ -712,7 +712,6 @@ export function DesktopApp() {
           options={{
             automaticLayout: true,
             minimap: { enabled: true },
-            breadcrumbs: { enabled: true },
             bracketPairColorization: { enabled: true },
             guides: {
               bracketPairs: true,
