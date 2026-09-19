@@ -262,8 +262,8 @@ pub async fn handle_extended(
         "lsp/start" => {
             let name = required_string(params, "name")?;
             let repo = repository(state, auth, params)?;
-            let session_id = state.services.start_lsp(&name, &repo).await?;
-            json!({"session_id": session_id})
+            let (session_id, capabilities) = state.services.start_lsp(&name, &repo).await?;
+            json!({"session_id": session_id, "capabilities": capabilities})
         }
         "lsp/request" => {
             let session_id = required_uuid(params, "session_id")?;
