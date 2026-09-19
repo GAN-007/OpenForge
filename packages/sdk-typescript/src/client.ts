@@ -64,7 +64,7 @@ export class OpenForgeClient {
 
   async rpc<T>(
     method: string,
-    params: Record<string, unknown> = {},
+    params: object = {},
     signal?: AbortSignal,
   ): Promise<T> {
     const id = this.nextId++;
