@@ -1,0 +1,606 @@
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerStatus {
+    Online,
+    Draining,
+    Offline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerDescriptor {
+    pub id: Uuid,
+    pub name: String,
+    pub endpoint: Option<String>,
+    pub capabilities: BTreeSet<String>,
+    pub labels: BTreeSet<String>,
+    pub status: WorkerStatus,
+    pub registered_at: DateTime<Utc>,
+    pub last_heartbeat_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Queued,
+    Leased,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl JobStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Leased => "leased",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "leased" => Ok(Self::Leased),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => bail!("unknown worker job status {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableJob {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub status: JobStatus,
+    pub payload: Value,
+    pub required_capabilities: BTreeSet<String>,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobLease {
+    pub job: DurableJob,
+    pub worker_id: Uuid,
+    pub lease_token: String,
+    pub leased_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobCheckpoint {
+    pub job_id: Uuid,
+    pub sequence: i64,
+    pub state: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct WorkerStore {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl WorkerStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        Self::from_connection(conn)
+    }
+
+    pub fn in_memory() -> Result<Self> {
+        Self::from_connection(Connection::open_in_memory()?)
+    }
+
+    fn from_connection(conn: Connection) -> Result<Self> {
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS workers(
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                endpoint TEXT,
+                capabilities_json TEXT NOT NULL,
+                labels_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                last_heartbeat_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS jobs(
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_id TEXT,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                required_capabilities_json TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                lease_worker_id TEXT,
+                lease_token TEXT,
+                leased_at TEXT,
+                lease_expires_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_claim
+                ON jobs(status, lease_expires_at, created_at);
+            CREATE TABLE IF NOT EXISTS job_checkpoints(
+                job_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(job_id, sequence)
+            );
+            "#,
+        )?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    pub fn register_worker(
+        &self,
+        name: &str,
+        endpoint: Option<&str>,
+        capabilities: BTreeSet<String>,
+        labels: BTreeSet<String>,
+    ) -> Result<WorkerDescriptor> {
+        if name.trim().is_empty() {
+            bail!("worker name cannot be empty");
+        }
+
+        let worker = WorkerDescriptor {
+            id: Uuid::now_v7(),
+            name: name.trim().to_string(),
+            endpoint: endpoint.map(str::to_string),
+            capabilities,
+            labels,
+            status: WorkerStatus::Online,
+            registered_at: Utc::now(),
+            last_heartbeat_at: Utc::now(),
+        };
+
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        conn.execute(
+            "INSERT INTO workers(
+                id,name,endpoint,capabilities_json,labels_json,status,
+                registered_at,last_heartbeat_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                worker.id.to_string(),
+                worker.name,
+                worker.endpoint,
+                serde_json::to_string(&worker.capabilities)?,
+                serde_json::to_string(&worker.labels)?,
+                "online",
+                worker.registered_at.to_rfc3339(),
+                worker.last_heartbeat_at.to_rfc3339()
+            ],
+        )?;
+        Ok(worker)
+    }
+
+    pub fn heartbeat_worker(&self, worker_id: Uuid) -> Result<bool> {
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        Ok(conn.execute(
+            "UPDATE workers
+             SET last_heartbeat_at=?2,status='online'
+             WHERE id=?1 AND status!='offline'",
+            params![worker_id.to_string(), Utc::now().to_rfc3339()],
+        )? == 1)
+    }
+
+    pub fn submit_job(
+        &self,
+        run_id: Uuid,
+        task_id: Option<Uuid>,
+        payload: Value,
+        required_capabilities: BTreeSet<String>,
+        max_attempts: u32,
+    ) -> Result<DurableJob> {
+        if max_attempts == 0 {
+            bail!("job max_attempts must be greater than zero");
+        }
+        let now = Utc::now();
+        let job = DurableJob {
+            id: Uuid::now_v7(),
+            run_id,
+            task_id,
+            status: JobStatus::Queued,
+            payload,
+            required_capabilities,
+            attempts: 0,
+            max_attempts,
+            created_at: now,
+            updated_at: now,
+        };
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        conn.execute(
+            "INSERT INTO jobs(
+                id,run_id,task_id,status,payload_json,required_capabilities_json,
+                attempts,max_attempts,created_at,updated_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8,?8)",
+            params![
+                job.id.to_string(),
+                job.run_id.to_string(),
+                job.task_id.map(|value| value.to_string()),
+                job.status.as_str(),
+                serde_json::to_string(&job.payload)?,
+                serde_json::to_string(&job.required_capabilities)?,
+                job.max_attempts,
+                now.to_rfc3339()
+            ],
+        )?;
+        Ok(job)
+    }
+
+    pub fn claim(
+        &self,
+        worker_id: Uuid,
+        worker_capabilities: &BTreeSet<String>,
+        lease_seconds: u64,
+    ) -> Result<Option<JobLease>> {
+        let now = Utc::now();
+        let expires = now
+            .checked_add_signed(Duration::seconds(lease_seconds.clamp(5, 86_400) as i64))
+            .context("worker lease expiry overflow")?;
+        let mut conn = self.conn.lock().expect("worker store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let mut statement = tx.prepare(
+            "SELECT id,run_id,task_id,status,payload_json,required_capabilities_json,
+                    attempts,max_attempts,created_at,updated_at
+             FROM jobs
+             WHERE (
+                 status='queued'
+                 OR (status='leased' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?1)
+             )
+             AND attempts < max_attempts
+             ORDER BY created_at
+             LIMIT 128",
+        )?;
+
+        let candidates = statement
+            .query_map(params![now.to_rfc3339()], parse_job_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+
+        let Some(job) = candidates
+            .into_iter()
+            .find(|job| job.required_capabilities.is_subset(worker_capabilities))
+        else {
+            tx.commit()?;
+            return Ok(None);
+        };
+
+        let lease_token = format!(
+            "of_lease_{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let changed = tx.execute(
+            "UPDATE jobs SET
+                status='leased',
+                attempts=attempts+1,
+                lease_worker_id=?2,
+                lease_token=?3,
+                leased_at=?4,
+                lease_expires_at=?5,
+                updated_at=?4
+             WHERE id=?1
+               AND (
+                   status='queued'
+                   OR (status='leased' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?4)
+               )",
+            params![
+                job.id.to_string(),
+                worker_id.to_string(),
+                lease_token,
+                now.to_rfc3339(),
+                expires.to_rfc3339()
+            ],
+        )?;
+        if changed != 1 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+
+        let mut leased_job = job;
+        leased_job.status = JobStatus::Leased;
+        leased_job.attempts += 1;
+        leased_job.updated_at = now;
+        tx.commit()?;
+
+        Ok(Some(JobLease {
+            job: leased_job,
+            worker_id,
+            lease_token,
+            leased_at: now,
+            expires_at: expires,
+        }))
+    }
+
+    pub fn heartbeat_lease(
+        &self,
+        job_id: Uuid,
+        lease_token: &str,
+        lease_seconds: u64,
+    ) -> Result<bool> {
+        let now = Utc::now();
+        let expires = now
+            .checked_add_signed(Duration::seconds(lease_seconds.clamp(5, 86_400) as i64))
+            .context("worker lease expiry overflow")?;
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        Ok(conn.execute(
+            "UPDATE jobs SET lease_expires_at=?3,updated_at=?4
+             WHERE id=?1 AND lease_token=?2 AND status='leased'",
+            params![
+                job_id.to_string(),
+                lease_token,
+                expires.to_rfc3339(),
+                now.to_rfc3339()
+            ],
+        )? == 1)
+    }
+
+    pub fn checkpoint(
+        &self,
+        job_id: Uuid,
+        lease_token: &str,
+        sequence: i64,
+        state: &Value,
+    ) -> Result<JobCheckpoint> {
+        if sequence < 0 {
+            bail!("checkpoint sequence cannot be negative");
+        }
+        let now = Utc::now();
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        let active = conn
+            .query_row(
+                "SELECT 1 FROM jobs WHERE id=?1 AND lease_token=?2 AND status='leased'",
+                params![job_id.to_string(), lease_token],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !active {
+            bail!("cannot checkpoint without an active matching lease");
+        }
+        conn.execute(
+            "INSERT INTO job_checkpoints(job_id,sequence,state_json,created_at)
+             VALUES(?1,?2,?3,?4)
+             ON CONFLICT(job_id,sequence) DO UPDATE SET
+                state_json=excluded.state_json,
+                created_at=excluded.created_at",
+            params![
+                job_id.to_string(),
+                sequence,
+                serde_json::to_string(state)?,
+                now.to_rfc3339()
+            ],
+        )?;
+
+        Ok(JobCheckpoint {
+            job_id,
+            sequence,
+            state: state.clone(),
+            created_at: now,
+        })
+    }
+
+    pub fn latest_checkpoint(&self, job_id: Uuid) -> Result<Option<JobCheckpoint>> {
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        conn.query_row(
+            "SELECT sequence,state_json,created_at
+             FROM job_checkpoints
+             WHERE job_id=?1
+             ORDER BY sequence DESC
+             LIMIT 1",
+            params![job_id.to_string()],
+            |row| {
+                let sequence: i64 = row.get(0)?;
+                let state_json: String = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                Ok((sequence, state_json, created_at))
+            },
+        )
+        .optional()?
+        .map(|(sequence, state_json, created_at)| {
+            Ok(JobCheckpoint {
+                job_id,
+                sequence,
+                state: serde_json::from_str(&state_json)?,
+                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+            })
+        })
+        .transpose()
+    }
+
+    pub fn complete(&self, job_id: Uuid, lease_token: &str, result: &Value) -> Result<bool> {
+        self.finish(job_id, lease_token, JobStatus::Completed, Some(result), None)
+    }
+
+    pub fn fail(&self, job_id: Uuid, lease_token: &str, error: &str) -> Result<bool> {
+        self.finish(job_id, lease_token, JobStatus::Failed, None, Some(error))
+    }
+
+    pub fn cancel(&self, job_id: Uuid) -> Result<bool> {
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        Ok(conn.execute(
+            "UPDATE jobs SET status='cancelled',updated_at=?2
+             WHERE id=?1 AND status IN ('queued','leased')",
+            params![job_id.to_string(), Utc::now().to_rfc3339()],
+        )? == 1)
+    }
+
+    pub fn requeue_expired(&self) -> Result<usize> {
+        let now = Utc::now();
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        Ok(conn.execute(
+            "UPDATE jobs SET
+                status=CASE WHEN attempts < max_attempts THEN 'queued' ELSE 'failed' END,
+                lease_worker_id=NULL,
+                lease_token=NULL,
+                leased_at=NULL,
+                lease_expires_at=NULL,
+                updated_at=?1,
+                last_error=CASE WHEN attempts < max_attempts
+                    THEN last_error
+                    ELSE COALESCE(last_error,'lease expired after final attempt')
+                END
+             WHERE status='leased'
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < ?1",
+            params![now.to_rfc3339()],
+        )?)
+    }
+
+    fn finish(
+        &self,
+        job_id: Uuid,
+        lease_token: &str,
+        status: JobStatus,
+        result: Option<&Value>,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        if !matches!(status, JobStatus::Completed | JobStatus::Failed) {
+            bail!("finish status must be completed or failed");
+        }
+        let now = Utc::now();
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        let payload = result.map(serde_json::to_string).transpose()?;
+        Ok(conn.execute(
+            "UPDATE jobs SET
+                status=?3,
+                payload_json=COALESCE(?4,payload_json),
+                last_error=?5,
+                lease_worker_id=NULL,
+                lease_token=NULL,
+                leased_at=NULL,
+                lease_expires_at=NULL,
+                updated_at=?6
+             WHERE id=?1 AND lease_token=?2 AND status='leased'",
+            params![
+                job_id.to_string(),
+                lease_token,
+                status.as_str(),
+                payload,
+                error,
+                now.to_rfc3339()
+            ],
+        )? == 1)
+    }
+}
+
+fn parse_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableJob> {
+    let id: String = row.get(0)?;
+    let run_id: String = row.get(1)?;
+    let task_id: Option<String> = row.get(2)?;
+    let status: String = row.get(3)?;
+    let payload: String = row.get(4)?;
+    let capabilities: String = row.get(5)?;
+    let attempts: u32 = row.get(6)?;
+    let max_attempts: u32 = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let updated_at: String = row.get(9)?;
+
+    Ok(DurableJob {
+        id: Uuid::parse_str(&id).map_err(to_sql_error)?,
+        run_id: Uuid::parse_str(&run_id).map_err(to_sql_error)?,
+        task_id: task_id
+            .map(|value| Uuid::parse_str(&value).map_err(to_sql_error))
+            .transpose()?,
+        status: JobStatus::parse(&status).map_err(to_sql_error)?,
+        payload: serde_json::from_str(&payload).map_err(to_sql_error)?,
+        required_capabilities: serde_json::from_str(&capabilities).map_err(to_sql_error)?,
+        attempts,
+        max_attempts,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map_err(to_sql_error)?
+            .with_timezone(&Utc),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map_err(to_sql_error)?
+            .with_timezone(&Utc),
+    })
+}
+
+fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(error),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durable_job_can_be_claimed_checkpointed_and_completed() {
+        let store = WorkerStore::in_memory().unwrap();
+        let worker = store
+            .register_worker(
+                "worker-a",
+                None,
+                BTreeSet::from(["rust".into(), "docker".into()]),
+                BTreeSet::new(),
+            )
+            .unwrap();
+        let job = store
+            .submit_job(
+                Uuid::new_v4(),
+                None,
+                serde_json::json!({"objective": "test"}),
+                BTreeSet::from(["rust".into()]),
+                2,
+            )
+            .unwrap();
+        let lease = store
+            .claim(worker.id, &worker.capabilities, 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.job.id, job.id);
+        store
+            .checkpoint(
+                job.id,
+                &lease.lease_token,
+                1,
+                &serde_json::json!({"phase": "compile"}),
+            )
+            .unwrap();
+        assert_eq!(
+            store.latest_checkpoint(job.id).unwrap().unwrap().sequence,
+            1
+        );
+        assert!(store
+            .complete(
+                job.id,
+                &lease.lease_token,
+                &serde_json::json!({"ok": true})
+            )
+            .unwrap());
+    }
+}
