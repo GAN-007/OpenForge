@@ -125,7 +125,7 @@ impl ArtifactStore {
     pub fn write_stream_chunk(&self, upload_id: &str, bytes: &[u8]) -> Result<()> {
         const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
         if bytes.len() > MAX_CHUNK_BYTES {
-            bail!("artifact stream chunk exceeds {} bytes", MAX_CHUNK_BYTES);
+            bail!("artifact stream chunk exceeds {MAX_CHUNK_BYTES} bytes");
         }
         let path = self.stream_path(upload_id)?;
         let mut file = fs::OpenOptions::new()

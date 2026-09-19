@@ -455,13 +455,9 @@ impl SandboxBackend for KubernetesBackend {
         }
 
         let deadline = Instant::now() + Duration::from_secs(request.timeout_seconds.max(1));
-        let mut exit_code = 1;
-        let mut timed_out = false;
-        loop {
+        let (exit_code, timed_out) = loop {
             if Instant::now() >= deadline {
-                timed_out = true;
-                exit_code = -1;
-                break;
+                break (-1, true);
             }
             let status = self
                 .kubectl(
@@ -491,15 +487,13 @@ impl SandboxBackend for KubernetesBackend {
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(0);
             if succeeded > 0 {
-                exit_code = 0;
-                break;
+                break (0, false);
             }
             if failed > 0 {
-                exit_code = 1;
-                break;
+                break (1, false);
             }
             sleep(Duration::from_secs(1)).await;
-        }
+        };
 
         let logs = self
             .kubectl(
