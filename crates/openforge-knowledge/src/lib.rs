@@ -380,11 +380,7 @@ struct TreeWalkContext<'a> {
     pending: &'a mut Vec<PendingReference>,
 }
 
-fn walk_tree(
-    node: Node<'_>,
-    parent_symbol: Option<&str>,
-    context: &mut TreeWalkContext<'_>,
-) {
+fn walk_tree(node: Node<'_>, parent_symbol: Option<&str>, context: &mut TreeWalkContext<'_>) {
     let kind = classify_node(context.language, node.kind());
     let mut current_symbol = parent_symbol.map(str::to_string);
 
@@ -420,7 +416,9 @@ fn walk_tree(
         current_symbol = Some(id);
     }
 
-    if is_import_node(node.kind()) && let Ok(text) = node.utf8_text(context.source) {
+    if is_import_node(node.kind())
+        && let Ok(text) = node.utf8_text(context.source)
+    {
         for target in import_targets(text) {
             context.pending.push(PendingReference {
                 source: current_symbol
