@@ -1098,5 +1098,5 @@ fn validate_host(value: &str) -> Result<()> {
 }
 
 fn shell_escape(value: &str) -> String {
-    format!("'{}'", value.replace(''', "'\\''"))
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
