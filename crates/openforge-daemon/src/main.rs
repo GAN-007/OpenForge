@@ -271,6 +271,7 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
         }
         "run/create" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let objective = required_string(&request.params, "objective")?;
             let budget = request
                 .params
@@ -286,12 +287,13 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
             )?;
             let run = state
                 .engine
-                .create_run(PathBuf::from(repo).as_path(), objective, autonomy, budget)
+                .create_run(&repo, objective, autonomy, budget)
                 .await?;
             Ok(serde_json::to_value(run)?)
         }
         "run/plan" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let run_id = required_uuid(&request.params, "run_id")?;
             let run = state
                 .engine
@@ -300,12 +302,13 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
                 .context("run not found")?;
             let tasks = state
                 .engine
-                .plan_run(PathBuf::from(repo).as_path(), &run)
+                .plan_run(&repo, &run)
                 .await?;
             Ok(serde_json::to_value(tasks)?)
         }
         "run/execute" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let run_id = required_uuid(&request.params, "run_id")?;
             let policy_path = request
                 .params
@@ -320,7 +323,7 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
             let policy = AgentPolicy::from_yaml(policy_path)?;
             let branch = state
                 .engine
-                .execute_run(PathBuf::from(repo).as_path(), run_id, policy, docker)
+                .execute_run(&repo, run_id, policy, docker)
                 .await?;
             Ok(json!({"integration_branch": branch}))
         }
@@ -456,10 +459,12 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
         }
         "repository/index" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             Ok(serde_json::to_value(RepositoryIndex::build(repo)?)?)
         }
         "search/query" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let query = required_string(&request.params, "query")?;
             let limit = request
                 .params
@@ -475,6 +480,7 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
         }
         "symbols/query" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             let query = required_string(&request.params, "query")?;
             let limit = request
                 .params
@@ -490,6 +496,7 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
         }
         "symbols/graph" => {
             let repo = required_string(&request.params, "repo")?;
+            let repo = ensure_repo_access(state, auth, &repo)?;
             Ok(serde_json::to_value(SymbolGraph::build(repo)?)?)
         }
         "artifact/put" => {
@@ -943,6 +950,26 @@ fn allowed_origins() -> Result<Vec<HeaderValue>> {
         .filter(|origin| !origin.is_empty())
         .map(|origin| HeaderValue::from_str(origin).map_err(Into::into))
         .collect()
+}
+
+pub(crate) fn ensure_repo_access(
+    state: &AppState,
+    auth: &AuthContext,
+    path: &str,
+) -> Result<PathBuf> {
+    let canonical = PathBuf::from(path)
+        .canonicalize()
+        .with_context(|| format!("repository path {path} unavailable"))?;
+    if auth.local_owner {
+        return Ok(canonical);
+    }
+    let workspace_id = auth
+        .workspace_id()
+        .context("team principal has no workspace")?;
+    state
+        .services
+        .team
+        .require_repository_access(workspace_id, &canonical)
 }
 
 fn required_string(params: &Value, field: &str) -> Result<String> {
