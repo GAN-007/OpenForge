@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 hex.workspace = true
+openforge-cost = { path = "../openforge-cost" }
 openforge-protocol = { path = "../openforge-protocol" }
 rusqlite.workspace = true
 serde_json.workspace = true
