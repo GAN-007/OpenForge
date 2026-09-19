@@ -367,7 +367,10 @@ export class OpenForgeClient {
   }
 
   startLanguageServer(name: string, repo: string) {
-    return this.rpc<{ session_id: string }>("lsp/start", { name, repo });
+    return this.rpc<{ session_id: string; capabilities: unknown }>(
+      "lsp/start",
+      { name, repo },
+    );
   }
 
   lspRequest<T>(
