@@ -656,6 +656,11 @@ impl Store {
         Ok(leases)
     }
 
+    pub fn clear_acp_processes(&self) -> Result<usize> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.execute("DELETE FROM acp_processes", [])?)
+    }
+
     pub fn register_acp_process(&self, program: &str) -> Result<Uuid> {
         if program.trim().is_empty() {
             anyhow::bail!("ACP program cannot be empty");

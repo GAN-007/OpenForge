@@ -50,9 +50,14 @@ pub struct Engine {
     fabric: Arc<dyn ModelProvider>,
     provider_names: Vec<String>,
     pub tool_bus: Arc<ToolBus>,
-    pub acp_clients: tokio::sync::Mutex<std::collections::HashMap<Uuid, AcpAgentClient>>,
+    pub acp_clients: tokio::sync::Mutex<
+        std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<AcpAgentClient>>>,
+    >,
     pub budget_guards: tokio::sync::Mutex<std::collections::HashMap<Uuid, BudgetGuard>>,
     pub budget_reservations: tokio::sync::Mutex<std::collections::HashMap<Uuid, Reservation>>,
+    pub budget_run_locks: tokio::sync::Mutex<
+        std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>,
+    >,
 }
 
 struct TaskExecution {
@@ -65,6 +70,7 @@ struct TaskExecution {
 impl Engine {
     pub fn new(config: OpenForgeConfig) -> Result<Self> {
         let store = Store::open(&config.state_db)?;
+        store.clear_acp_processes()?;
         let mut providers: Vec<Arc<dyn ModelProvider>> = Vec::new();
 
         for provider in &config.providers {
@@ -165,6 +171,7 @@ impl Engine {
             acp_clients: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             budget_guards: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             budget_reservations: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            budget_run_locks: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 

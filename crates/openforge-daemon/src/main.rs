@@ -591,7 +591,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .unwrap_or(16 * 1024 * 1024)
                 .clamp(1024, 64 * 1024 * 1024) as usize;
 
-            let client = openforge_acp::AcpAgentClient::spawn_with_config(config).await?;
+            let mut client = openforge_acp::AcpAgentClient::spawn_with_config(config).await?;
             let process_id = match state.engine.store.register_acp_process(&program) {
                 Ok(process_id) => process_id,
                 Err(error) => {
@@ -604,17 +604,21 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .acp_clients
                 .lock()
                 .await
-                .insert(process_id, client);
+                .insert(process_id, Arc::new(tokio::sync::Mutex::new(client)));
             Ok(json!({"process_id": process_id}))
         }
         "acp/request" => {
             let process_id = required_uuid(&request.params, "process_id")?;
             let method = required_string(&request.params, "method")?;
             let params = request.params.get("params").cloned().unwrap_or(Value::Null);
-            let mut clients = state.engine.acp_clients.lock().await;
-            let client = clients
-                .get_mut(&process_id)
-                .context("ACP process not found")?;
+            let client = {
+                let clients = state.engine.acp_clients.lock().await;
+                clients
+                    .get(&process_id)
+                    .cloned()
+                    .context("ACP process not found")?
+            };
+            let mut client = client.lock().await;
             let response = client.request(&method, params).await?;
             Ok(json!({"result": response}))
         }
@@ -622,10 +626,14 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let process_id = required_uuid(&request.params, "process_id")?;
             let method = required_string(&request.params, "method")?;
             let params = request.params.get("params").cloned().unwrap_or(Value::Null);
-            let mut clients = state.engine.acp_clients.lock().await;
-            let client = clients
-                .get_mut(&process_id)
-                .context("ACP process not found")?;
+            let client = {
+                let clients = state.engine.acp_clients.lock().await;
+                clients
+                    .get(&process_id)
+                    .cloned()
+                    .context("ACP process not found")?
+            };
+            let mut client = client.lock().await;
             client.notify(&method, params).await?;
             Ok(json!({"ok": true}))
         }
@@ -633,6 +641,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let process_id = required_uuid(&request.params, "process_id")?;
             let client = state.engine.acp_clients.lock().await.remove(&process_id);
             if let Some(client) = client {
+                let mut client = client.lock().await;
                 client.close().await?;
                 state.engine.store.deregister_acp_process(process_id)?;
                 Ok(json!({"closed": true}))
@@ -691,6 +700,8 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "budget/reserve" => {
             let run_id = required_uuid(&request.params, "run_id")?;
+            let run_lock = budget_run_lock(state, run_id).await;
+            let _run_guard = run_lock.lock().await;
             let estimated = request
                 .params
                 .get("estimated_usd")
@@ -738,6 +749,13 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     .and_then(Value::as_str)
                     .context("reservation run_id is invalid")?,
             )?;
+            let run_lock = budget_run_lock(state, run_id).await;
+            let _run_guard = run_lock.lock().await;
+            let record = state
+                .engine
+                .store
+                .budget_reservation(reservation_id)?
+                .context("budget reservation not found")?;
             if record
                 .get("settled_at")
                 .is_some_and(|value| !value.is_null())
@@ -780,6 +798,8 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "budget/snapshot" => {
             let run_id = required_uuid(&request.params, "run_id")?;
+            let run_lock = budget_run_lock(state, run_id).await;
+            let _run_guard = run_lock.lock().await;
             let guard = budget_guard_for_run(state, run_id).await?;
             let snapshot = guard.detailed_snapshot().await;
             Ok(json!({
@@ -850,9 +870,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
 }
 
 async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGuard> {
-    let mut guards = state.engine.budget_guards.lock().await;
-    if let Some(guard) = guards.get(&run_id) {
-        return Ok(guard.clone());
+    {
+        let guards = state.engine.budget_guards.lock().await;
+        if let Some(guard) = guards.get(&run_id) {
+            return Ok(guard.clone());
+        }
     }
 
     let run = state
@@ -881,8 +903,16 @@ async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGu
     let (reserved, reservation_spent) = state.engine.store.budget_reservation_totals(run_id)?;
     let spent = ledger_spent + reservation_spent;
     let guard = BudgetGuard::with_usage(limits, 0.0, spent, spent, reserved)?;
-    guards.insert(run_id, guard.clone());
-    Ok(guard)
+    let mut guards = state.engine.budget_guards.lock().await;
+    Ok(guards.entry(run_id).or_insert_with(|| guard.clone()).clone())
+}
+
+async fn budget_run_lock(state: &AppState, run_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = state.engine.budget_run_locks.lock().await;
+    locks
+        .entry(run_id)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 async fn validate_recovered_settlement(

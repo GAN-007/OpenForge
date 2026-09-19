@@ -158,7 +158,7 @@ impl AcpAgentClient {
         .context("ACP request timed out")?
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         if self.child.id().is_some() {
             let _ = self.child.kill().await;
         }
