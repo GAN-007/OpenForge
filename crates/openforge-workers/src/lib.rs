@@ -202,6 +202,46 @@ impl WorkerStore {
         Ok(worker)
     }
 
+    pub fn get_worker(&self, worker_id: Uuid) -> Result<Option<WorkerDescriptor>> {
+        let conn = self.conn.lock().expect("worker store mutex poisoned");
+        conn.query_row(
+            "SELECT name,endpoint,capabilities_json,labels_json,status,
+                    registered_at,last_heartbeat_at
+             FROM workers WHERE id=?1",
+            params![worker_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(name, endpoint, capabilities, labels, status, registered_at, last_heartbeat_at)| {
+            Ok(WorkerDescriptor {
+                id: worker_id,
+                name,
+                endpoint,
+                capabilities: serde_json::from_str(&capabilities)?,
+                labels: serde_json::from_str(&labels)?,
+                status: match status.as_str() {
+                    "online" => WorkerStatus::Online,
+                    "draining" => WorkerStatus::Draining,
+                    "offline" => WorkerStatus::Offline,
+                    other => bail!("unknown worker status {other}"),
+                },
+                registered_at: DateTime::parse_from_rfc3339(&registered_at)?.with_timezone(&Utc),
+                last_heartbeat_at: DateTime::parse_from_rfc3339(&last_heartbeat_at)?.with_timezone(&Utc),
+            })
+        })
+        .transpose()
+    }
+
     pub fn heartbeat_worker(&self, worker_id: Uuid) -> Result<bool> {
         let conn = self.conn.lock().expect("worker store mutex poisoned");
         Ok(conn.execute(
