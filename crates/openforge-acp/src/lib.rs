@@ -166,11 +166,16 @@ impl AcpAgentClient {
         .context("ACP request timed out")?
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub async fn terminate(&mut self) -> Result<()> {
         if self.child.id().is_some() {
-            let _ = self.child.kill().await;
+            self.child.kill().await.context("terminate ACP agent")?;
+            let _ = self.child.wait().await;
         }
         Ok(())
+    }
+
+    pub async fn close(mut self) -> Result<()> {
+        self.terminate().await
     }
 
     async fn write(&mut self, value: &Value) -> Result<()> {
