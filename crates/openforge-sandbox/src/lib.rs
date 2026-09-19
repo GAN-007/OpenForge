@@ -328,14 +328,6 @@ impl SandboxBackend for DockerBackend {
         {
             bail!("task requested network but sandbox network_mode is none");
         }
-        if lease.policy.security.network_mode == "restricted"
-            && lease.policy.security.allowed_hosts.is_empty()
-            && lease.policy.network_enabled
-        {
-            // Restricted mode intentionally gives the process no raw network.
-            // Network-capable OpenForge tools operate through policy-controlled brokers.
-        }
-
         for (key, value) in lease
             .policy
             .environment
