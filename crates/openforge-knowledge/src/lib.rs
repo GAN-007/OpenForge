@@ -537,10 +537,7 @@ fn classify_node(language: &str, kind: &str) -> Option<KnowledgeNodeKind> {
 fn is_import_node(kind: &str) -> bool {
     matches!(
         kind,
-        "use_declaration"
-            | "import_statement"
-            | "import_from_statement"
-            | "export_statement"
+        "use_declaration" | "import_statement" | "import_from_statement" | "export_statement"
     )
 }
 
