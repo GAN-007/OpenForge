@@ -154,17 +154,16 @@ impl KnowledgeGraph {
                 continue;
             };
 
-            walk_tree(
-                tree.root_node(),
-                &source,
-                &relative,
+            let mut walk = TreeWalkContext {
+                source: &source,
+                path: &relative,
                 language,
-                &file_id,
-                None,
-                &mut nodes,
-                &mut edges,
-                &mut pending,
-            );
+                file_id: &file_id,
+                nodes: &mut nodes,
+                edges: &mut edges,
+                pending: &mut pending,
+            };
+            walk_tree(tree.root_node(), None, &mut walk);
         }
 
         let by_name = nodes
@@ -371,24 +370,28 @@ pub fn reciprocal_rank_fusion(rankings: &[Vec<String>], limit: usize) -> Vec<(St
     values
 }
 
+struct TreeWalkContext<'a> {
+    source: &'a [u8],
+    path: &'a str,
+    language: &'a str,
+    file_id: &'a str,
+    nodes: &'a mut Vec<KnowledgeNode>,
+    edges: &'a mut BTreeSet<KnowledgeEdge>,
+    pending: &'a mut Vec<PendingReference>,
+}
+
 fn walk_tree(
     node: Node<'_>,
-    source: &[u8],
-    path: &str,
-    language: &str,
-    file_id: &str,
     parent_symbol: Option<&str>,
-    nodes: &mut Vec<KnowledgeNode>,
-    edges: &mut BTreeSet<KnowledgeEdge>,
-    pending: &mut Vec<PendingReference>,
+    context: &mut TreeWalkContext<'_>,
 ) {
-    let kind = classify_node(language, node.kind());
+    let kind = classify_node(context.language, node.kind());
     let mut current_symbol = parent_symbol.map(str::to_string);
 
     if let Some(symbol_kind) = kind {
         let name = node
             .child_by_field_name("name")
-            .and_then(|value| value.utf8_text(source).ok())
+            .and_then(|value| value.utf8_text(context.source).ok())
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| node.kind())
@@ -396,77 +399,68 @@ fn walk_tree(
 
         let start_line = node.start_position().row + 1;
         let end_line = node.end_position().row + 1;
-        let signature = compact_text(node.utf8_text(source).unwrap_or_default(), 320);
-        let id = symbol_id(path, start_line, node.kind(), &name);
-        nodes.push(KnowledgeNode {
+        let signature = compact_text(node.utf8_text(context.source).unwrap_or_default(), 320);
+        let id = symbol_id(context.path, start_line, node.kind(), &name);
+        context.nodes.push(KnowledgeNode {
             id: id.clone(),
             name,
             kind: symbol_kind,
-            path: path.to_string(),
-            language: language.to_string(),
+            path: context.path.to_string(),
+            language: context.language.to_string(),
             start_line,
             end_line,
             sha256: hex::encode(Sha256::digest(signature.as_bytes())),
             signature,
         });
-        edges.insert(KnowledgeEdge {
-            from: parent_symbol.unwrap_or(file_id).to_string(),
+        context.edges.insert(KnowledgeEdge {
+            from: parent_symbol.unwrap_or(context.file_id).to_string(),
             to: id.clone(),
             kind: KnowledgeEdgeKind::Contains,
         });
         current_symbol = Some(id);
     }
 
-    if is_import_node(node.kind()) {
-        if let Ok(text) = node.utf8_text(source) {
-            for target in import_targets(text) {
-                pending.push(PendingReference {
-                    source: current_symbol.as_deref().unwrap_or(file_id).to_string(),
-                    target_name: target,
-                    kind: KnowledgeEdgeKind::Imports,
-                });
-            }
+    if is_import_node(node.kind()) && let Ok(text) = node.utf8_text(context.source) {
+        for target in import_targets(text) {
+            context.pending.push(PendingReference {
+                source: current_symbol
+                    .as_deref()
+                    .unwrap_or(context.file_id)
+                    .to_string(),
+                target_name: target,
+                kind: KnowledgeEdgeKind::Imports,
+            });
         }
     }
 
-    if is_call_node(node.kind()) {
-        if let Some(function) = node
+    if is_call_node(node.kind())
+        && let Some(function) = node
             .child_by_field_name("function")
             .or_else(|| node.child_by_field_name("name"))
-        {
-            if let Ok(text) = function.utf8_text(source) {
-                let target = text
-                    .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-                    .filter(|value| !value.is_empty())
-                    .next_back()
-                    .unwrap_or("")
-                    .to_string();
-                if !target.is_empty() {
-                    pending.push(PendingReference {
-                        source: current_symbol.as_deref().unwrap_or(file_id).to_string(),
-                        target_name: target,
-                        kind: KnowledgeEdgeKind::Calls,
-                    });
-                }
-            }
+        && let Ok(text) = function.utf8_text(context.source)
+    {
+        let target = text
+            .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+            .filter(|value| !value.is_empty())
+            .next_back()
+            .unwrap_or("")
+            .to_string();
+        if !target.is_empty() {
+            context.pending.push(PendingReference {
+                source: current_symbol
+                    .as_deref()
+                    .unwrap_or(context.file_id)
+                    .to_string(),
+                target_name: target,
+                kind: KnowledgeEdgeKind::Calls,
+            });
         }
     }
 
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
-            let child = cursor.node();
-            walk_tree(
-                child,
-                source,
-                path,
-                language,
-                file_id,
-                current_symbol.as_deref(),
-                nodes,
-                edges,
-                pending,
-            );
+            walk_tree(cursor.node(), current_symbol.as_deref(), context);
             if !cursor.goto_next_sibling() {
                 break;
             }
