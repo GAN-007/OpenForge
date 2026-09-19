@@ -38,16 +38,11 @@ pub struct ModelRouter {
 }
 
 impl ModelRouter {
-    pub fn eligible(
-        &self,
-        model: &ModelSpec,
-        requirements: &ModelRequirements,
-    ) -> bool {
+    pub fn eligible(&self, model: &ModelSpec, requirements: &ModelRequirements) -> bool {
         model.context_tokens >= requirements.context_tokens
             && (!requirements.requires_tools || model.supports_tools)
             && (!requirements.requires_vision || model.supports_vision)
-            && (!requirements.requires_structured_output
-                || model.supports_structured_output)
+            && (!requirements.requires_structured_output || model.supports_structured_output)
             && model.max_data_classification >= requirements.data_classification
             && !requirements
                 .excluded_model_families
@@ -67,8 +62,7 @@ impl ModelRouter {
         expected_output: u64,
     ) -> f64 {
         expected_input as f64 / 1_000_000.0 * model.input_usd_per_million
-            + expected_output as f64 / 1_000_000.0
-                * model.output_usd_per_million
+            + expected_output as f64 / 1_000_000.0 * model.output_usd_per_million
     }
 
     pub fn score(
@@ -88,8 +82,7 @@ impl ModelRouter {
         }
 
         if let Some(max_latency_ms) = requirements.max_latency_ms {
-            let estimated_ms =
-                (model.latency_score.clamp(0.0, 1.0) * 60_000.0) as u64;
+            let estimated_ms = (model.latency_score.clamp(0.0, 1.0) * 60_000.0) as u64;
             if estimated_ms > max_latency_ms {
                 return None;
             }
@@ -122,12 +115,7 @@ impl ModelRouter {
         let mut ranked: Vec<(&ModelSpec, RoutingCandidate)> = models
             .iter()
             .filter_map(|model| {
-                let score = self.score(
-                    model,
-                    requirements,
-                    expected_input,
-                    expected_output,
-                )?;
+                let score = self.score(model, requirements, expected_input, expected_output)?;
                 Some((
                     model,
                     RoutingCandidate {
@@ -181,15 +169,10 @@ impl ModelRouter {
         expected_input: u64,
         expected_output: u64,
     ) -> Result<&'a ModelSpec> {
-        self.rank(
-            models,
-            requirements,
-            expected_input,
-            expected_output,
-        )
-        .first()
-        .map(|(model, _)| *model)
-        .ok_or_else(|| anyhow::anyhow!("no model satisfies routing constraints"))
+        self.rank(models, requirements, expected_input, expected_output)
+            .first()
+            .map(|(model, _)| *model)
+            .ok_or_else(|| anyhow::anyhow!("no model satisfies routing constraints"))
     }
 }
 

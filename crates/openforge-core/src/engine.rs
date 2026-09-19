@@ -1,30 +1,30 @@
 use crate::{AgentLoop, OpenForgeConfig, RunnerBackend, ToolBus};
-use openforge_acp::AcpAgentClient;
-use openforge_cost::{BudgetGuard, Reservation};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use futures_util::future::join_all;
+use openforge_acp::AcpAgentClient;
 use openforge_context::RepositoryIndex;
-use openforge_search::SearchIndex;
-use openforge_symbols::SymbolGraph;
+use openforge_cost::{BudgetGuard, Reservation};
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
-    AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider,
-    FabricProvider, GeminiConfig, GeminiProvider, ModelProvider, ModelRouter,
-    OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+    AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider, FabricProvider,
+    GeminiConfig, GeminiProvider, ModelProvider, ModelRouter, OpenAiCompatibleConfig,
+    OpenAiCompatibleProvider,
 };
 use openforge_policy::AgentPolicy;
 use openforge_protocol::{
-    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest,
-    ModelRequirements, ResourceLimits, Run, RunStatus, SandboxSecurityProfile,
-    TaskBudget, TaskNode, TaskRequirements, TaskStatus,
+    Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest, ModelRequirements,
+    ResourceLimits, Run, RunStatus, SandboxSecurityProfile, TaskBudget, TaskNode, TaskRequirements,
+    TaskStatus,
 };
 use openforge_sandbox::{
     DockerBackend, ExecRequest, KubernetesBackend, LocalProcessBackend, SandboxBackend,
     SandboxPolicy,
 };
-use openforge_scheduler::{schedule_wave, validate_dag, SchedulerConfig};
+use openforge_scheduler::{SchedulerConfig, schedule_wave, validate_dag};
+use openforge_search::SearchIndex;
 use openforge_store::{CostRecord, Store};
+use openforge_symbols::SymbolGraph;
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -52,8 +52,7 @@ pub struct Engine {
     pub tool_bus: Arc<ToolBus>,
     pub acp_clients: tokio::sync::Mutex<std::collections::HashMap<Uuid, AcpAgentClient>>,
     pub budget_guards: tokio::sync::Mutex<std::collections::HashMap<Uuid, BudgetGuard>>,
-    pub budget_reservations:
-        tokio::sync::Mutex<std::collections::HashMap<Uuid, Reservation>>,
+    pub budget_reservations: tokio::sync::Mutex<std::collections::HashMap<Uuid, Reservation>>,
 }
 
 struct TaskExecution {
@@ -103,28 +102,24 @@ impl Engine {
                         .api_key_env
                         .as_ref()
                         .context("Anthropic provider requires api_key_env")?;
-                    let api_key =
-                        std::env::var(env).with_context(|| format!("missing {env}"))?;
-                    providers.push(Arc::new(AnthropicProvider::new(
-                        AnthropicConfig {
-                            provider_name: provider.name.clone(),
-                            base_url: if provider.base_url.is_empty() {
-                                "https://api.anthropic.com".into()
-                            } else {
-                                provider.base_url.clone()
-                            },
-                            api_key,
-                            models,
+                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    providers.push(Arc::new(AnthropicProvider::new(AnthropicConfig {
+                        provider_name: provider.name.clone(),
+                        base_url: if provider.base_url.is_empty() {
+                            "https://api.anthropic.com".into()
+                        } else {
+                            provider.base_url.clone()
                         },
-                    )?));
+                        api_key,
+                        models,
+                    })?));
                 }
                 "gemini" => {
                     let env = provider
                         .api_key_env
                         .as_ref()
                         .context("Gemini provider requires api_key_env")?;
-                    let api_key =
-                        std::env::var(env).with_context(|| format!("missing {env}"))?;
+                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
                     providers.push(Arc::new(GeminiProvider::new(GeminiConfig {
                         provider_name: provider.name.clone(),
                         base_url: if provider.base_url.is_empty() {
@@ -143,13 +138,11 @@ impl Engine {
                         .or_else(|| std::env::var("AWS_REGION").ok())
                         .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
                         .unwrap_or_else(|| "us-east-1".into());
-                    providers.push(Arc::new(BedrockCliProvider::new(
-                        BedrockCliConfig {
-                            provider_name: provider.name.clone(),
-                            region,
-                            models,
-                        },
-                    )));
+                    providers.push(Arc::new(BedrockCliProvider::new(BedrockCliConfig {
+                        provider_name: provider.name.clone(),
+                        region,
+                        models,
+                    })));
                 }
                 other => bail!("unsupported provider kind {other}"),
             }
@@ -283,8 +276,7 @@ impl Engine {
         };
 
         let router = ModelRouter::default();
-        let model =
-            router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
+        let model = router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
         let response = self.fabric.invoke(model, &request).await?;
 
         if response.cost_usd > planning_budget {
@@ -311,18 +303,13 @@ impl Engine {
         let allocated = plan.tasks.iter().map(|task| task.max_usd).sum::<f64>();
         let available = (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
         if !allocated.is_finite() || allocated <= 0.0 || allocated > available {
-            bail!(
-                "planner allocated task budget {allocated:.4} but only {available:.4} remains"
-            );
+            bail!("planner allocated task budget {allocated:.4} but only {available:.4} remains");
         }
 
         let now = Utc::now();
         let mut id_map = std::collections::HashMap::new();
         for task in &plan.tasks {
-            if id_map
-                .insert(task.key.clone(), Uuid::new_v4())
-                .is_some()
-            {
+            if id_map.insert(task.key.clone(), Uuid::new_v4()).is_some() {
                 bail!("duplicate task key {}", task.key);
             }
         }
@@ -409,7 +396,8 @@ impl Engine {
         } else {
             self.config.runner.backend
         };
-        self.execute_run_with_backend(repo, run_id, policy, runner).await
+        self.execute_run_with_backend(repo, run_id, policy, runner)
+            .await
     }
 
     pub async fn execute_run_with_backend(
@@ -428,10 +416,10 @@ impl Engine {
         }
 
         self.store.update_run_status(run_id, RunStatus::Running)?;
-        let git =
-            GitBroker::open(repo, PathBuf::from(&self.config.worktree_dir)).await?;
-        let integration =
-            git.create_integration_workspace(run_id, &run.base_sha).await?;
+        let git = GitBroker::open(repo, PathBuf::from(&self.config.worktree_dir)).await?;
+        let integration = git
+            .create_integration_workspace(run_id, &run.base_sha)
+            .await?;
 
         loop {
             tasks = self.store.list_tasks(run_id)?;
@@ -495,14 +483,7 @@ impl Engine {
                 .collect();
 
             let results = join_all(batch.iter().map(|task| {
-                self.execute_task(
-                    &git,
-                    &run,
-                    task,
-                    policy.clone(),
-                    runner,
-                    &base_sha,
-                )
+                self.execute_task(&git, &run, task, policy.clone(), runner, &base_sha)
             }))
             .await;
 
@@ -511,17 +492,16 @@ impl Engine {
 
                 if let Some(commit) = &execution.commit {
                     let pre_integration_sha = git.workspace_head(&integration).await?;
-                    let integrated_sha =
-                        match git.integrate_commit(&integration, commit).await {
-                            Ok(sha) => sha,
-                            Err(error) => {
-                                let mut failed = task.clone();
-                                failed.status = TaskStatus::Failed;
-                                failed.updated_at = Utc::now();
-                                let _ = self.store.upsert_task(&failed);
-                                return Err(error);
-                            }
-                        };
+                    let integrated_sha = match git.integrate_commit(&integration, commit).await {
+                        Ok(sha) => sha,
+                        Err(error) => {
+                            let mut failed = task.clone();
+                            failed.status = TaskStatus::Failed;
+                            failed.updated_at = Utc::now();
+                            let _ = self.store.upsert_task(&failed);
+                            return Err(error);
+                        }
+                    };
 
                     if let Err(error) = self
                         .verify_acceptance(&integration, &execution.task, runner)
@@ -591,8 +571,7 @@ impl Engine {
         let integration_branch = integration.branch.clone();
         git.remove_workspace(&integration).await?;
 
-        self.store
-            .update_run_status(run_id, RunStatus::Completed)?;
+        self.store.update_run_status(run_id, RunStatus::Completed)?;
         self.store.append_event(
             Some(run_id),
             None,
@@ -674,9 +653,7 @@ impl Engine {
         if response.cost_usd > max_cost_usd {
             bail!("completion exceeded its hard cost budget");
         }
-        if self.store.run_cost(run_id)? + response.cost_usd
-            > run.budget.hard_limit
-        {
+        if self.store.run_cost(run_id)? + response.cost_usd > run.budget.hard_limit {
             bail!("run budget exhausted");
         }
 
@@ -786,16 +763,13 @@ impl Engine {
             max_iterations: 30,
         };
 
-        let result = agent
-            .run(&current, &workspace.path, &lease, context)
-            .await;
+        let result = agent.run(&current, &workspace.path, &lease, context).await;
         let tool_cleanup = tools.close().await;
 
         let execution = match result {
             Ok(outcome) if outcome.success => {
                 tool_cleanup.context("tool bus cleanup failed")?;
-                self.verify_with_backend(&backend, &lease, &current)
-                    .await?;
+                self.verify_with_backend(&backend, &lease, &current).await?;
                 let commit = git
                     .commit_all(
                         &workspace,
@@ -946,11 +920,7 @@ impl Engine {
         result
     }
 
-    async fn task_context(
-        &self,
-        workspace: &GitWorkspace,
-        task: &TaskNode,
-    ) -> Result<String> {
+    async fn task_context(&self, workspace: &GitWorkspace, task: &TaskNode) -> Result<String> {
         let index = RepositoryIndex::build(&workspace.path)?;
         let search = SearchIndex::build(&workspace.path)?;
         let symbols = SymbolGraph::build(&workspace.path)?;
@@ -995,10 +965,7 @@ impl Engine {
                     .nth(16_000)
                     .map(|(index, _)| index)
                     .unwrap_or(text.len());
-                output.push_str(&format!(
-                    "\n\nFILE {relative}\n{}",
-                    &text[..end]
-                ));
+                output.push_str(&format!("\n\nFILE {relative}\n{}", &text[..end]));
             }
         }
 
@@ -1040,9 +1007,15 @@ struct PlanTask {
     max_usd: f64,
 }
 
-fn default_task_attempts() -> u32 { 2 }
-fn default_model_calls() -> u32 { 30 }
-fn default_tool_calls() -> u32 { 200 }
+fn default_task_attempts() -> u32 {
+    2
+}
+fn default_model_calls() -> u32 {
+    30
+}
+fn default_tool_calls() -> u32 {
+    200
+}
 
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
@@ -1066,10 +1039,7 @@ fn strip_fences(value: &str) -> String {
         return trimmed.to_owned();
     }
 
-    let without_open = trimmed
-        .split_once('\n')
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
+    let without_open = trimmed.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
     without_open
         .strip_suffix("```")
         .unwrap_or(without_open)

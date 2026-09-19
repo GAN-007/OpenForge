@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use openforge_protocol::{SecretLeaseDescriptor, SecretLeaseId};
@@ -53,12 +53,7 @@ impl fmt::Debug for SecretLease {
 
 #[async_trait]
 pub trait SecretBroker: Send + Sync {
-    async fn lease(
-        &self,
-        name: &str,
-        audience: &str,
-        ttl_seconds: u64,
-    ) -> Result<SecretLease>;
+    async fn lease(&self, name: &str, audience: &str, ttl_seconds: u64) -> Result<SecretLease>;
 
     async fn resolve(&self, name: &str) -> Result<SecretValue> {
         let lease = self.lease(name, "compatibility-resolve", 30).await?;
@@ -76,10 +71,7 @@ impl EnvironmentSecretBroker {
         Self::with_max_ttl(allowed, 300)
     }
 
-    pub fn with_max_ttl(
-        allowed: impl IntoIterator<Item = String>,
-        max_ttl_seconds: u64,
-    ) -> Self {
+    pub fn with_max_ttl(allowed: impl IntoIterator<Item = String>, max_ttl_seconds: u64) -> Self {
         Self {
             allowed: allowed.into_iter().collect(),
             max_ttl_seconds: max_ttl_seconds.max(1),
@@ -99,17 +91,12 @@ impl EnvironmentSecretBroker {
 
 #[async_trait]
 impl SecretBroker for EnvironmentSecretBroker {
-    async fn lease(
-        &self,
-        name: &str,
-        audience: &str,
-        ttl_seconds: u64,
-    ) -> Result<SecretLease> {
+    async fn lease(&self, name: &str, audience: &str, ttl_seconds: u64) -> Result<SecretLease> {
         self.validate_request(name, audience)?;
 
         let ttl = ttl_seconds.clamp(1, self.max_ttl_seconds);
-        let value = std::env::var(name)
-            .with_context(|| format!("secret {name} is not available"))?;
+        let value =
+            std::env::var(name).with_context(|| format!("secret {name} is not available"))?;
         let issued_at = Utc::now();
         let expires_at = issued_at
             .checked_add_signed(Duration::seconds(ttl as i64))

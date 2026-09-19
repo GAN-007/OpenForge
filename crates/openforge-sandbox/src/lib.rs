@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use openforge_protocol::SandboxSecurityProfile;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{sleep, timeout, Duration, Instant},
+    time::{Duration, Instant, sleep, timeout},
 };
 use uuid::Uuid;
 
@@ -115,7 +115,9 @@ impl SandboxBackend for LocalProcessBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         Ok(SandboxLease {
             id: Uuid::new_v4(),
             backend: self.name().into(),
@@ -136,9 +138,9 @@ impl SandboxBackend for LocalProcessBackend {
             .kill_on_drop(true);
         command.env_clear();
 
-        for (key, value) in std::env::vars().filter(|(key, _)| {
-            ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str())
-        }) {
+        for (key, value) in std::env::vars()
+            .filter(|(key, _)| ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str()))
+        {
             command.env(key, value);
         }
         for (key, value) in &lease.policy.environment {
@@ -258,8 +260,9 @@ impl SandboxBackend for KubernetesBackend {
             bail!("kubernetes backend requires image, namespace, and pvc_claim");
         }
 
-        let canonical_workspace =
-            workspace.canonicalize().context("workspace does not exist")?;
+        let canonical_workspace = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         let canonical_root = self
             .workspace_root
             .canonicalize()
@@ -311,14 +314,15 @@ impl SandboxBackend for KubernetesBackend {
             .workspace
             .strip_prefix(&workspace_root)
             .context("workspace is outside Kubernetes workspace root")?;
-        let workspace_subpath = workspace_relative
-            .to_string_lossy()
-            .replace('\\', "/");
+        let workspace_subpath = workspace_relative.to_string_lossy().replace('\\', "/");
         let relative_cwd = normalized_relative(&request.cwd)?;
         let working_dir = if relative_cwd.as_os_str().is_empty() {
             "/workspace".to_string()
         } else {
-            format!("/workspace/{}", relative_cwd.to_string_lossy().replace('\\', "/"))
+            format!(
+                "/workspace/{}",
+                relative_cwd.to_string_lossy().replace('\\', "/")
+            )
         };
         let job_name = format!("openforge-{}", Uuid::now_v7().simple());
         let deny_network = !lease.policy.network_enabled;
@@ -388,8 +392,7 @@ impl SandboxBackend for KubernetesBackend {
             ]
         });
         if let Some(service_account) = &self.service_account {
-            pod_spec["serviceAccountName"] =
-                serde_json::Value::String(service_account.clone());
+            pod_spec["serviceAccountName"] = serde_json::Value::String(service_account.clone());
         }
 
         let job = serde_json::json!({
@@ -451,7 +454,10 @@ impl SandboxBackend for KubernetesBackend {
         let applied = applied?;
         if applied.exit_code != 0 {
             self.cleanup_job(&job_name, deny_network).await;
-            bail!("failed to create Kubernetes sandbox job: {}", applied.stderr);
+            bail!(
+                "failed to create Kubernetes sandbox job: {}",
+                applied.stderr
+            );
         }
 
         let deadline = Instant::now() + Duration::from_secs(request.timeout_seconds.max(1));
@@ -560,7 +566,9 @@ impl SandboxBackend for DockerBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         let result = host_command(
             "docker",
             &["version", "--format", "{{.Server.Version}}"],
@@ -668,22 +676,13 @@ impl SandboxBackend for DockerBackend {
         {
             Ok(result) => {
                 if result.timed_out {
-                    let _ = host_command(
-                        "docker",
-                        &["rm", "-f", &name],
-                        Duration::from_secs(10),
-                    )
-                    .await;
+                    let _ =
+                        host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 }
                 Ok(result)
             }
             Err(error) => {
-                let _ = host_command(
-                    "docker",
-                    &["rm", "-f", &name],
-                    Duration::from_secs(10),
-                )
-                .await;
+                let _ = host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 Err(error)
             }
         }

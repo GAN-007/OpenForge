@@ -54,15 +54,11 @@ class OpenForgeClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise OpenForgeError(
-                f"invalid daemon response: HTTP {response.status_code}"
-            ) from exc
+            raise OpenForgeError(f"invalid daemon response: HTTP {response.status_code}") from exc
 
         if response.is_error or payload.get("error"):
             error = payload.get("error") or {}
-            raise OpenForgeError(
-                str(error.get("message") or f"HTTP {response.status_code}")
-            )
+            raise OpenForgeError(str(error.get("message") or f"HTTP {response.status_code}"))
         if "result" not in payload:
             raise OpenForgeError("daemon response has no result")
         return payload["result"]
@@ -213,7 +209,6 @@ class OpenForgeClient:
             params["argv"] = argv
         result = await self.rpc("policy/evaluate", params)
         return str(result["decision"])
-
 
     async def lease_secret(
         self,

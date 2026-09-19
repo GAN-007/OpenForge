@@ -1,7 +1,11 @@
 use anyhow::{Context, Result};
 use openforge_protocol::{DataClassification, ModelSpec};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenForgeConfig {
@@ -27,13 +31,27 @@ pub struct OpenForgeConfig {
     pub environment: BTreeMap<String, String>,
 }
 
-fn default_state_db() -> String { ".openforge/state.db".into() }
-fn default_artifact_dir() -> String { ".openforge/artifacts".into() }
-fn default_worktree_dir() -> String { ".openforge/worktrees".into() }
-fn default_plugin_dir() -> PathBuf { PathBuf::from("plugins") }
-fn default_parallel() -> usize { 4 }
-fn default_runner_image() -> String { "ghcr.io/gan-007/openforge-runner:latest".into() }
-fn default_kubernetes_namespace() -> String { "default".into() }
+fn default_state_db() -> String {
+    ".openforge/state.db".into()
+}
+fn default_artifact_dir() -> String {
+    ".openforge/artifacts".into()
+}
+fn default_worktree_dir() -> String {
+    ".openforge/worktrees".into()
+}
+fn default_plugin_dir() -> PathBuf {
+    PathBuf::from("plugins")
+}
+fn default_parallel() -> usize {
+    4
+}
+fn default_runner_image() -> String {
+    "ghcr.io/gan-007/openforge-runner:latest".into()
+}
+fn default_kubernetes_namespace() -> String {
+    "default".into()
+}
 
 impl Default for OpenForgeConfig {
     fn default() -> Self {
@@ -59,7 +77,6 @@ impl OpenForgeConfig {
         serde_yaml::from_str(&raw).context("parse OpenForge config")
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -96,14 +113,21 @@ impl Default for BrowserWorkerConfig {
     }
 }
 
-fn default_mcp_timeout() -> u64 { 60 }
-fn default_protocol_bytes() -> usize { 8 * 1024 * 1024 }
-fn default_browser_timeout() -> u64 { 60 }
-fn default_browser_program() -> String { "node".into() }
+fn default_mcp_timeout() -> u64 {
+    60
+}
+fn default_protocol_bytes() -> usize {
+    8 * 1024 * 1024
+}
+fn default_browser_timeout() -> u64 {
+    60
+}
+fn default_browser_program() -> String {
+    "node".into()
+}
 fn default_browser_args() -> Vec<String> {
     vec!["packages/browser-worker/dist/index.js".into()]
 }
-
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -192,9 +216,15 @@ pub struct ModelConfig {
     pub max_data_classification: DataClassification,
 }
 
-fn default_half() -> f64 { 0.5 }
-fn default_quality() -> f64 { 0.8 }
-fn default_privacy() -> f64 { 0.7 }
+fn default_half() -> f64 {
+    0.5
+}
+fn default_quality() -> f64 {
+    0.8
+}
+fn default_privacy() -> f64 {
+    0.7
+}
 
 impl ModelConfig {
     pub fn to_spec(&self, provider: &str) -> ModelSpec {

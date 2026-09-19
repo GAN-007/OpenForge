@@ -2,12 +2,8 @@ use crate::config::{BrowserWorkerConfig, McpServerConfig};
 use anyhow::{Context, Result};
 use openforge_browser::BrowserClient;
 use openforge_mcp::{McpProcessConfig, McpStdioClient};
-use serde_json::{json, Value};
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    time::Duration,
-};
+use serde_json::{Value, json};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::sync::Mutex;
 
 pub struct ToolBus {
@@ -56,8 +52,7 @@ impl ToolBus {
             .get(server_name)
             .with_context(|| format!("unknown MCP server {server_name}"))?;
 
-        let mut config =
-            McpProcessConfig::new(server.program.clone(), server.args.clone());
+        let mut config = McpProcessConfig::new(server.program.clone(), server.args.clone());
         config.cwd = server.cwd.as_ref().map(PathBuf::from);
         config.environment = server.environment.clone();
         config.request_timeout = Duration::from_secs(server.timeout_seconds.max(1));
@@ -84,7 +79,9 @@ impl ToolBus {
     pub async fn mcp_list_tools(&self, server_name: &str) -> Result<Value> {
         let mut client = self.mcp_client(server_name).await?;
         let result = async {
-            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client
+                .initialize("openforge", env!("CARGO_PKG_VERSION"))
+                .await?;
             Ok::<Value, anyhow::Error>(serde_json::to_value(client.list_tools().await?)?)
         }
         .await;
@@ -94,7 +91,9 @@ impl ToolBus {
     pub async fn mcp_list_resources(&self, server_name: &str) -> Result<Value> {
         let mut client = self.mcp_client(server_name).await?;
         let result = async {
-            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client
+                .initialize("openforge", env!("CARGO_PKG_VERSION"))
+                .await?;
             client.list_resources().await
         }
         .await;
@@ -104,7 +103,9 @@ impl ToolBus {
     pub async fn mcp_read_resource(&self, server_name: &str, uri: &str) -> Result<Value> {
         let mut client = self.mcp_client(server_name).await?;
         let result = async {
-            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client
+                .initialize("openforge", env!("CARGO_PKG_VERSION"))
+                .await?;
             client.read_resource(uri).await
         }
         .await;
@@ -114,18 +115,16 @@ impl ToolBus {
     pub async fn mcp_list_prompts(&self, server_name: &str) -> Result<Value> {
         let mut client = self.mcp_client(server_name).await?;
         let result = async {
-            client.initialize("openforge", env!("CARGO_PKG_VERSION")).await?;
+            client
+                .initialize("openforge", env!("CARGO_PKG_VERSION"))
+                .await?;
             client.list_prompts().await
         }
         .await;
         finish_client(result, client.shutdown().await)
     }
 
-    pub async fn browser_navigate(
-        &self,
-        url: &str,
-        timeout_ms: u64,
-    ) -> Result<Value> {
+    pub async fn browser_navigate(&self, url: &str, timeout_ms: u64) -> Result<Value> {
         let mut guard = self.browser.lock().await;
         let client = self.browser_client(&mut guard).await?;
         Ok(serde_json::to_value(
@@ -133,11 +132,7 @@ impl ToolBus {
         )?)
     }
 
-    pub async fn browser_click(
-        &self,
-        selector: &str,
-        timeout_ms: u64,
-    ) -> Result<Value> {
+    pub async fn browser_click(&self, selector: &str, timeout_ms: u64) -> Result<Value> {
         let mut guard = self.browser.lock().await;
         let client = self.browser_client(&mut guard).await?;
         let url = client.click(selector, timeout_ms).await?;
@@ -156,11 +151,7 @@ impl ToolBus {
         Ok(json!({"ok": true}))
     }
 
-    pub async fn browser_text(
-        &self,
-        selector: Option<&str>,
-        timeout_ms: u64,
-    ) -> Result<Value> {
+    pub async fn browser_text(&self, selector: Option<&str>, timeout_ms: u64) -> Result<Value> {
         let mut guard = self.browser.lock().await;
         let client = self.browser_client(&mut guard).await?;
         let text = client.text(selector, timeout_ms).await?;
@@ -170,9 +161,7 @@ impl ToolBus {
     pub async fn browser_screenshot(&self, full_page: bool) -> Result<Value> {
         let mut guard = self.browser.lock().await;
         let client = self.browser_client(&mut guard).await?;
-        Ok(serde_json::to_value(
-            client.screenshot(full_page).await?,
-        )?)
+        Ok(serde_json::to_value(client.screenshot(full_page).await?)?)
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -201,8 +190,7 @@ impl ToolBus {
         slot: &'a mut Option<BrowserClient>,
     ) -> Result<&'a mut BrowserClient> {
         if slot.is_none() {
-            let timeout =
-                Duration::from_secs(self.browser_config.timeout_seconds.max(1));
+            let timeout = Duration::from_secs(self.browser_config.timeout_seconds.max(1));
             *slot = Some(
                 BrowserClient::spawn(
                     &self.browser_config.program,
@@ -216,7 +204,6 @@ impl ToolBus {
         Ok(slot.as_mut().expect("browser initialized"))
     }
 }
-
 
 fn finish_client<T>(result: Result<T>, shutdown: Result<()>) -> Result<T> {
     match (result, shutdown) {

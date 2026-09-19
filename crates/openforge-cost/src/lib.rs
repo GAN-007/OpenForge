@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -161,7 +161,12 @@ impl Reservation {
 }
 
 fn validate_limits(limits: &BudgetLimits) -> Result<()> {
-    for value in [limits.per_call, limits.per_task, limits.per_run, limits.daily] {
+    for value in [
+        limits.per_call,
+        limits.per_task,
+        limits.per_run,
+        limits.daily,
+    ] {
         if !value.is_finite() || value < 0.0 {
             bail!("invalid budget limit");
         }

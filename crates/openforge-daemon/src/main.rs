@@ -1,35 +1,30 @@
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::State,
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
 use openforge_core::{CompletionInput, Engine, OpenForgeConfig, RunnerBackend};
 use openforge_cost::{BudgetGuard, BudgetLimits};
 use openforge_events::verify_event_chain;
+use openforge_plugins::PluginHost;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
-    AutonomyLevel, CapabilitySet, EventEnvelope, RpcError, RpcRequest, RpcResponse,
-    PROTOCOL_VERSION,
+    AutonomyLevel, CapabilitySet, EventEnvelope, PROTOCOL_VERSION, RpcError, RpcRequest,
+    RpcResponse,
 };
-use openforge_plugins::PluginHost;
 use openforge_search::SearchIndex;
 use openforge_secrets::{EnvironmentSecretBroker, SecretBroker};
 use openforge_symbols::SymbolGraph;
 use openforge_telemetry::TelemetryRegistry;
-use serde_json::{json, Value};
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::Arc,
-    time::Instant,
-};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
@@ -58,8 +53,7 @@ struct AppState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -282,12 +276,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let branch = if let Some(runner) = runner {
                 state
                     .engine
-                    .execute_run_with_backend(
-                        PathBuf::from(repo).as_path(),
-                        run_id,
-                        policy,
-                        runner,
-                    )
+                    .execute_run_with_backend(PathBuf::from(repo).as_path(), run_id, policy, runner)
                     .await?
             } else {
                 state
@@ -347,17 +336,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .and_then(Value::as_str)
                 .map(Uuid::parse_str)
                 .transpose()?;
-            let repository_id = request
-                .params
-                .get("repository_id")
-                .and_then(Value::as_str);
-            state.engine.store.memory_put(
-                &scope,
-                project_id,
-                repository_id,
-                &key,
-                &value,
-            )?;
+            let repository_id = request.params.get("repository_id").and_then(Value::as_str);
+            state
+                .engine
+                .store
+                .memory_put(&scope, project_id, repository_id, &key, &value)?;
             Ok(json!({"ok": true}))
         }
         "memory/search" => {
@@ -488,12 +471,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     .unwrap_or_else(|| json!({})),
             )
             .context("artifact metadata must be an object")?;
-            Ok(serde_json::to_value(state.artifacts.put_bytes(
-                &bytes,
-                media_type,
-                source,
-                metadata,
-            )?)?)
+            Ok(serde_json::to_value(
+                state
+                    .artifacts
+                    .put_bytes(&bytes, media_type, source, metadata)?,
+            )?)
         }
         "artifact/get" => {
             let digest = required_string(&request.params, "sha256")?;
@@ -542,8 +524,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 &format!("secret {secret_name}"),
             )?;
 
-            let broker =
-                EnvironmentSecretBroker::with_max_ttl(policy.allowed_secrets(), 300);
+            let broker = EnvironmentSecretBroker::with_max_ttl(policy.allowed_secrets(), 300);
             let lease = broker.lease(&secret_name, &audience, ttl_seconds).await?;
             state.engine.store.record_secret_lease(&lease.descriptor)?;
             Ok(json!({
@@ -556,9 +537,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             state.engine.store.revoke_secret_lease(lease_id)?;
             Ok(json!({"revoked": true}))
         }
-        "secret/list" => {
-            Ok(serde_json::to_value(state.engine.store.list_secret_leases()?)?)
-        }
+        "secret/list" => Ok(serde_json::to_value(
+            state.engine.store.list_secret_leases()?,
+        )?),
         "acp/spawn" => {
             let program = required_string(&request.params, "program")?;
             let args = optional_string_array(&request.params, "args")?;
@@ -618,7 +599,12 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     return Err(error);
                 }
             };
-            state.engine.acp_clients.lock().await.insert(process_id, client);
+            state
+                .engine
+                .acp_clients
+                .lock()
+                .await
+                .insert(process_id, client);
             Ok(json!({"process_id": process_id}))
         }
         "acp/request" => {
@@ -655,9 +641,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 Ok(json!({"closed": false, "stale_record_removed": removed}))
             }
         }
-        "acp/list" => {
-            Ok(serde_json::to_value(state.engine.store.list_acp_processes()?)?)
-        }
+        "acp/list" => Ok(serde_json::to_value(
+            state.engine.store.list_acp_processes()?,
+        )?),
         "mcp/list_tools" => {
             let server_name = required_string(&request.params, "server_name")?;
             state.engine.tool_bus.mcp_list_tools(&server_name).await
@@ -712,14 +698,17 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .context("estimated_usd is required")?;
             let guard = budget_guard_for_run(state, run_id).await?;
             let reservation = guard.reserve(estimated).await?;
-            let reservation_id =
-                match state.engine.store.register_budget_reservation(run_id, estimated) {
-                    Ok(id) => id,
-                    Err(error) => {
-                        reservation.cancel().await;
-                        return Err(error);
-                    }
-                };
+            let reservation_id = match state
+                .engine
+                .store
+                .register_budget_reservation(run_id, estimated)
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    reservation.cancel().await;
+                    return Err(error);
+                }
+            };
             state
                 .engine
                 .budget_reservations
@@ -749,7 +738,10 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     .and_then(Value::as_str)
                     .context("reservation run_id is invalid")?,
             )?;
-            if record.get("settled_at").is_some_and(|value| !value.is_null()) {
+            if record
+                .get("settled_at")
+                .is_some_and(|value| !value.is_null())
+            {
                 let previous = record
                     .get("actual_usd")
                     .and_then(Value::as_f64)
@@ -857,7 +849,6 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
     }
 }
 
-
 async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGuard> {
     let mut guards = state.engine.budget_guards.lock().await;
     if let Some(guard) = guards.get(&run_id) {
@@ -869,22 +860,25 @@ async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGu
         .store
         .get_run(run_id)?
         .context("run not found")?;
-    let limits = state.engine.store.budget_limits(run_id)?.unwrap_or_else(|| {
-        let per_run = run.budget.hard_limit.min(25.0);
-        let per_task = per_run.min(5.0);
-        let per_call = per_task.min(1.0);
-        BudgetLimits {
-            per_call,
-            per_task,
-            per_run,
-            daily: run.budget.hard_limit.max(100.0),
-        }
-    });
+    let limits = state
+        .engine
+        .store
+        .budget_limits(run_id)?
+        .unwrap_or_else(|| {
+            let per_run = run.budget.hard_limit.min(25.0);
+            let per_task = per_run.min(5.0);
+            let per_call = per_task.min(1.0);
+            BudgetLimits {
+                per_call,
+                per_task,
+                per_run,
+                daily: run.budget.hard_limit.max(100.0),
+            }
+        });
     state.engine.store.upsert_budget_limits(run_id, &limits)?;
 
     let ledger_spent = state.engine.store.run_cost(run_id)?;
-    let (reserved, reservation_spent) =
-        state.engine.store.budget_reservation_totals(run_id)?;
+    let (reserved, reservation_spent) = state.engine.store.budget_reservation_totals(run_id)?;
     let spent = ledger_spent + reservation_spent;
     let guard = BudgetGuard::with_usage(limits, 0.0, spent, spent, reserved)?;
     guards.insert(run_id, guard.clone());
@@ -959,15 +953,8 @@ fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvel
     Ok(events)
 }
 
-fn evaluate_policy(
-    policy: &AgentPolicy,
-    capability: &str,
-    params: &Value,
-) -> Result<String> {
-    let subject = params
-        .get("subject")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+fn evaluate_policy(policy: &AgentPolicy, capability: &str, params: &Value) -> Result<String> {
+    let subject = params.get("subject").and_then(Value::as_str).unwrap_or("");
     let decision = match capability {
         "read_path" => policy.evaluate(CapabilityRequest::ReadPath(subject)),
         "write_path" => policy.evaluate(CapabilityRequest::WritePath(subject)),
