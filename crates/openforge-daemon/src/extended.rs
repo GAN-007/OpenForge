@@ -347,13 +347,22 @@ pub async fn handle_extended(
                 .unwrap_or(".");
             let cwd = safe_child_path(&repo, cwd, true)?;
             let environment = string_map(params, "environment")?;
+            let rows = bounded_u32(params, "rows", 30, 1, u16::MAX.into())? as u16;
+            let cols = bounded_u32(params, "cols", 120, 1, u16::MAX.into())? as u16;
             serde_json::to_value(
                 state
                     .services
                     .terminals
-                    .spawn(&program, &args, &cwd, &environment)
+                    .spawn_sized(&program, &args, &cwd, &environment, rows, cols)
                     .await?,
             )?
+        }
+        "terminal/resize" => {
+            let id = required_uuid(params, "terminal_id")?;
+            let rows = bounded_u32(params, "rows", 30, 1, u16::MAX.into())? as u16;
+            let cols = bounded_u32(params, "cols", 120, 1, u16::MAX.into())? as u16;
+            state.services.terminals.resize(id, rows, cols).await?;
+            json!({"ok": true})
         }
         "terminal/list" => serde_json::to_value(state.services.terminals.list().await)?,
         "terminal/close" => {
