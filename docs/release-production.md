@@ -28,3 +28,8 @@ A failed mandatory gate leaves the GitHub release in draft state. Release creati
 ## Rollback and migrations
 
 Stable releases retain the previous installer and updater manifest. Before a state-schema migration the daemon creates a versioned backup of the OpenForge state directory and records the source and target schema versions. Destructive migrations are prohibited unless a tested reverse transformation or backup restoration path exists. Worker leases are allowed to expire before daemon rollback so another worker can safely resume from the latest durable checkpoint.
+
+
+## Source normalization
+
+The normalization workflow runs Rust formatting, Python formatting and dependency-lock normalization before the validation matrix. It commits only when those deterministic transformations change tracked files. The immutable CI workflow then verifies the normalized tree with formatting checks and frozen dependency locks; it does not repair source code during validation.
