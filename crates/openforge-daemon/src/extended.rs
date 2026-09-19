@@ -796,6 +796,21 @@ pub async fn handle_extended(
             state.services.plugins.invoke(&id, invocation).await?
         }
 
+        "browser/request" => {
+            let browser_method = required_string(params, "browser_method")?;
+            let browser_params = params
+                .get("browser_params")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            state
+                .services
+                .browser_request(&browser_method, browser_params)
+                .await?
+        }
+        "browser/close" => {
+            json!({"closed": state.services.close_browser().await?})
+        }
+
         "database/introspect" => {
             let repo = repository(state, auth, params)?;
             let connection: DatabaseConnection = serde_json::from_value(
