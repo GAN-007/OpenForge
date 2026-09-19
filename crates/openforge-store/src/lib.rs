@@ -816,6 +816,44 @@ impl Store {
         })
     }
 
+    pub fn daily_cost(&self) -> Result<f64> {
+        let start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .context("failed to build start-of-day timestamp")?
+            .and_utc()
+            .to_rfc3339();
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT COALESCE(SUM(amount_usd),0) FROM cost_ledger WHERE created_at>=?1",
+            [start],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn daily_budget_usage(&self) -> Result<(f64, f64)> {
+        let start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .context("failed to build start-of-day timestamp")?
+            .and_utc()
+            .to_rfc3339();
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let reserved: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0) FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NULL",
+            [&start],
+            |row| row.get(0),
+        )?;
+        let settled: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0) FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NOT NULL",
+            [&start],
+            |row| row.get(0),
+        )?;
+        Ok((reserved, settled))
+    }
+
     pub fn budget_usage(&self, run_id: Uuid) -> Result<(f64, f64)> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let reserved: f64 = conn.query_row(
