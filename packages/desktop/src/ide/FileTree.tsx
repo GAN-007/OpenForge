@@ -49,7 +49,7 @@ function buildTree(files: FileRecord[]): TreeNode[] {
 function NodeView(props: {
   node: TreeNode;
   depth: number;
-  activePath?: string;
+  activePath: string | undefined;
   dirtyPaths: Set<string>;
   onOpen: (path: string) => void;
 }) {
@@ -98,7 +98,7 @@ function NodeView(props: {
 
 export function FileTree(props: {
   files: FileRecord[];
-  activePath?: string;
+  activePath: string | undefined;
   dirtyPaths: Set<string>;
   filter: string;
   onOpen: (path: string) => void;
