@@ -27,6 +27,207 @@ pub async fn handle_extended(
     let value = match method {
         "agent/list" => serde_json::to_value(state.engine.agents())?,
 
+        "workspace/file-read" => {
+            let repo = repository(state, auth, params)?;
+            let path = required_string(params, "path")?;
+            let path = safe_child_path(&repo, &path, true)?;
+            if !path.is_file() {
+                bail!("workspace path is not a file");
+            }
+            let metadata = tokio::fs::metadata(&path).await?;
+            if metadata.len() > 10 * 1024 * 1024 {
+                bail!("workspace file exceeds 10 MiB editor limit");
+            }
+            let bytes = tokio::fs::read(&path).await?;
+            if bytes.iter().take(8192).any(|byte| *byte == 0) {
+                bail!("workspace file is binary");
+            }
+            let text = String::from_utf8(bytes).context("workspace file is not UTF-8")?;
+            json!({
+                "path": path.strip_prefix(&repo)?.to_string_lossy().replace('\\', "/"),
+                "content": text,
+                "bytes": metadata.len()
+            })
+        }
+        "workspace/file-write" => {
+            let repo = repository(state, auth, params)?;
+            let relative = required_string(params, "path")?;
+            let content = params
+                .get("content")
+                .and_then(Value::as_str)
+                .context("content is required")?;
+            if content.len() > 10 * 1024 * 1024 {
+                bail!("workspace file exceeds 10 MiB editor limit");
+            }
+            let path = safe_child_path(&repo, &relative, false)?;
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let temporary = path.with_extension(format!(
+                "{}.openforge-tmp-{}",
+                path.extension().and_then(|value| value.to_str()).unwrap_or(""),
+                Uuid::new_v4().simple()
+            ));
+            tokio::fs::write(&temporary, content.as_bytes()).await?;
+            tokio::fs::rename(&temporary, &path).await?;
+            json!({"path": relative, "bytes": content.len()})
+        }
+        "workspace/file-delete" => {
+            let repo = repository(state, auth, params)?;
+            let relative = required_string(params, "path")?;
+            let path = safe_child_path(&repo, &relative, true)?;
+            if path == repo {
+                bail!("cannot delete repository root");
+            }
+            let metadata = tokio::fs::metadata(&path).await?;
+            if metadata.is_dir() {
+                tokio::fs::remove_dir_all(&path).await?;
+            } else {
+                tokio::fs::remove_file(&path).await?;
+            }
+            json!({"deleted": true, "path": relative})
+        }
+        "workspace/file-rename" => {
+            let repo = repository(state, auth, params)?;
+            let from = required_string(params, "from")?;
+            let to = required_string(params, "to")?;
+            let source = safe_child_path(&repo, &from, true)?;
+            let target = safe_child_path(&repo, &to, false)?;
+            if target.exists() {
+                bail!("rename target already exists");
+            }
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::rename(source, target).await?;
+            json!({"renamed": true, "from": from, "to": to})
+        }
+        "workspace/directory-create" => {
+            let repo = repository(state, auth, params)?;
+            let relative = required_string(params, "path")?;
+            let path = safe_child_path(&repo, &relative, false)?;
+            tokio::fs::create_dir_all(path).await?;
+            json!({"created": true, "path": relative})
+        }
+        "git/status" => {
+            let repo = repository(state, auth, params)?;
+            let output = run_git(
+                &repo,
+                &["status", "--porcelain=v2", "--branch", "--untracked-files=all"],
+            )
+            .await?;
+            json!({"porcelain_v2": output})
+        }
+        "git/diff" => {
+            let repo = repository(state, auth, params)?;
+            let staged = params
+                .get("staged")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let path = optional_string(params, "path");
+            let mut arguments = vec!["diff"];
+            if staged {
+                arguments.push("--cached");
+            }
+            arguments.push("--");
+            if let Some(path) = path.as_deref() {
+                validate_git_path(path)?;
+                arguments.push(path);
+            }
+            json!({"diff": run_git(&repo, &arguments).await?})
+        }
+        "git/stage" => {
+            let repo = repository(state, auth, params)?;
+            let paths = string_array(params, "paths")?
+                .context("paths is required")?;
+            if paths.is_empty() {
+                bail!("paths cannot be empty");
+            }
+            let mut arguments = vec!["add", "--"];
+            for path in &paths {
+                validate_git_path(path)?;
+                arguments.push(path);
+            }
+            run_git(&repo, &arguments).await?;
+            json!({"staged": paths})
+        }
+        "git/unstage" => {
+            let repo = repository(state, auth, params)?;
+            let paths = string_array(params, "paths")?
+                .context("paths is required")?;
+            if paths.is_empty() {
+                bail!("paths cannot be empty");
+            }
+            let mut arguments = vec!["restore", "--staged", "--"];
+            for path in &paths {
+                validate_git_path(path)?;
+                arguments.push(path);
+            }
+            run_git(&repo, &arguments).await?;
+            json!({"unstaged": paths})
+        }
+        "git/commit" => {
+            let repo = repository(state, auth, params)?;
+            let message = required_string(params, "message")?;
+            if message.len() > 5000 {
+                bail!("commit message is too long");
+            }
+            let output = run_git(&repo, &["commit", "-m", &message]).await?;
+            json!({"output": output})
+        }
+        "git/log" => {
+            let repo = repository(state, auth, params)?;
+            let limit = bounded_usize(params, "limit", 50, 1, 500)?;
+            let limit_text = limit.to_string();
+            let output = run_git(
+                &repo,
+                &[
+                    "log",
+                    &format!("-n{limit_text}"),
+                    "--date=iso-strict",
+                    "--format=%H%x09%an%x09%ae%x09%aI%x09%s",
+                ],
+            )
+            .await?;
+            json!({"log": output})
+        }
+        "git/branches" => {
+            let repo = repository(state, auth, params)?;
+            let output = run_git(
+                &repo,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname:short)%09%(objectname)%09%(HEAD)",
+                    "refs/heads",
+                ],
+            )
+            .await?;
+            json!({"branches": output})
+        }
+        "test/discover" => {
+            let repo = repository(state, auth, params)?;
+            let graph = KnowledgeGraph::build(&repo)?;
+            let tests = graph
+                .nodes
+                .iter()
+                .filter(|node| {
+                    let path = node.path.to_ascii_lowercase();
+                    let name = node.name.to_ascii_lowercase();
+                    path.contains("/tests/")
+                        || path.starts_with("tests/")
+                        || path.ends_with("_test.py")
+                        || path.ends_with(".test.ts")
+                        || path.ends_with(".test.tsx")
+                        || path.ends_with(".spec.ts")
+                        || path.ends_with(".spec.tsx")
+                        || name.starts_with("test_")
+                        || name.ends_with("_test")
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            serde_json::to_value(tests)?
+        }
+
         "knowledge/build" => {
             let repo = repository(state, auth, params)?;
             serde_json::to_value(KnowledgeGraph::build(repo)?)?
@@ -758,6 +959,46 @@ pub async fn handle_extended(
     };
 
     Ok(Some(value))
+}
+
+async fn run_git(repo: &std::path::Path, arguments: &[&str]) -> Result<String> {
+    let output = tokio::process::Command::new("git")
+        .args(arguments)
+        .current_dir(repo)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .context("execute git command")?;
+    if !output.status.success() {
+        bail!(
+            "git {:?} failed: {}",
+            arguments,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn validate_git_path(value: &str) -> Result<()> {
+    let path = std::path::Path::new(value);
+    if value.is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        bail!("invalid repository-relative Git path");
+    }
+    Ok(())
 }
 
 fn repository(state: &AppState, auth: &AuthContext, params: &Value) -> Result<PathBuf> {
