@@ -633,7 +633,7 @@ async fn handle_terminal_socket(state: AppState, id: Uuid, socket: WebSocket) {
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {}
-                    Err(error) => {
+                    Some(Err(error)) => {
                         tracing::debug!(terminal_id=%id,error=%error,"terminal websocket receive error");
                         break;
                     }
