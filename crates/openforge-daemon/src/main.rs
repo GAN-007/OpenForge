@@ -574,7 +574,7 @@ async fn terminal_ws(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let auth = match authorize(&state, &headers) {
+    let auth = match authorize_websocket(&state, &headers) {
         Ok(auth) => auth,
         Err(error) => {
             return (
@@ -598,7 +598,8 @@ async fn terminal_ws(
         }
     };
 
-    ws.on_upgrade(move |socket| handle_terminal_socket(state, id, socket))
+    ws.protocols(["openforge-v1"])
+        .on_upgrade(move |socket| handle_terminal_socket(state, id, socket))
         .into_response()
 }
 
@@ -689,7 +690,7 @@ async fn run_events_ws(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let auth = match authorize(&state, &headers) {
+    let auth = match authorize_websocket(&state, &headers) {
         Ok(auth) => auth,
         Err(error) => {
             return (
@@ -713,7 +714,8 @@ async fn run_events_ws(
         }
     };
 
-    ws.on_upgrade(move |socket| handle_run_events_socket(state, run_id, socket))
+    ws.protocols(["openforge-v1"])
+        .on_upgrade(move |socket| handle_run_events_socket(state, run_id, socket))
         .into_response()
 }
 
@@ -846,14 +848,36 @@ fn string_array(params: &Value, field: &str) -> Result<Vec<String>> {
 }
 
 fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
-    let authorization = headers
+    let supplied = headers
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    let supplied = authorization
+        .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
+    authorize_token(state, supplied)
+}
+
+fn authorize_websocket(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
+    if let Ok(auth) = authorize(state, headers) {
+        return Ok(auth);
+    }
+    let supplied = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find_map(|protocol| protocol.strip_prefix("openforge-token."))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    authorize_token(state, supplied)
+}
+
+fn authorize_token(state: &AppState, supplied: Option<&str>) -> Result<AuthContext> {
     if let Some(expected) = state.api_token.as_deref() {
         if let Some(supplied) = supplied {
             if constant_time_eq(expected.as_bytes(), supplied.as_bytes()) {
@@ -871,7 +895,7 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
                 });
             }
         }
-        anyhow::bail!("valid Bearer authorization is required");
+        anyhow::bail!("valid bearer authorization is required");
     }
 
     if let Some(supplied) = supplied {
@@ -882,7 +906,7 @@ fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthContext> {
                 local_owner: false,
             });
         }
-        anyhow::bail!("invalid Bearer token");
+        anyhow::bail!("invalid bearer token");
     }
 
     Ok(AuthContext {
