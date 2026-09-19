@@ -77,6 +77,7 @@ impl TerminalManager {
         }
 
         let program = program.to_string();
+        let descriptor_program = program.clone();
         let arguments = args.to_vec();
         let environment = environment.clone();
         let cwd_for_spawn = cwd.clone();
@@ -119,7 +120,7 @@ impl TerminalManager {
 
         let descriptor = TerminalDescriptor {
             id,
-            program: program.clone(),
+            program: descriptor_program,
             cwd: cwd.display().to_string(),
             created_at,
             rows,
