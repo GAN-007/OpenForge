@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use openforge_core::{Engine, OpenForgeConfig};
+use openforge_core::{Engine, OpenForgeConfig, RunnerBackend};
 use openforge_policy::AgentPolicy;
 use openforge_protocol::AutonomyLevel;
 use serde_json::Value;
@@ -44,6 +44,8 @@ enum Command {
         policy: PathBuf,
         #[arg(long)]
         docker: bool,
+        #[arg(long, value_enum)]
+        runner: Option<Runner>,
     },
     Run {
         objective: String,
@@ -57,6 +59,8 @@ enum Command {
         policy: PathBuf,
         #[arg(long)]
         docker: bool,
+        #[arg(long, value_enum)]
+        runner: Option<Runner>,
     },
     Status {
         run_id: Uuid,
@@ -111,6 +115,31 @@ enum Mode {
     Autonomous,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Runner {
+    Local,
+    Docker,
+    Kubernetes,
+}
+
+impl From<Runner> for RunnerBackend {
+    fn from(value: Runner) -> Self {
+        match value {
+            Runner::Local => Self::Local,
+            Runner::Docker => Self::Docker,
+            Runner::Kubernetes => Self::Kubernetes,
+        }
+    }
+}
+
+fn selected_runner(runner: Option<Runner>, docker: bool) -> RunnerBackend {
+    runner.map(Into::into).unwrap_or(if docker {
+        RunnerBackend::Docker
+    } else {
+        RunnerBackend::Local
+    })
+}
+
 impl From<Mode> for AutonomyLevel {
     fn from(value: Mode) -> Self {
         match value {
@@ -158,10 +187,17 @@ async fn main() -> Result<()> {
             repo,
             policy,
             docker,
+            runner,
         } => {
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run_id, policy, docker).await?;
+            let integration_branch = engine
+                .execute_run_with_backend(
+                    &repo,
+                    run_id,
+                    policy,
+                    selected_runner(runner, docker),
+                )
+                .await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -178,6 +214,7 @@ async fn main() -> Result<()> {
             mode,
             policy,
             docker,
+            runner,
         } => {
             let run = engine
                 .create_run(&repo, objective, mode.into(), budget)
@@ -186,8 +223,14 @@ async fn main() -> Result<()> {
             eprintln!("planned {} tasks for run {}", tasks.len(), run.id);
 
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run.id, policy, docker).await?;
+            let integration_branch = engine
+                .execute_run_with_backend(
+                    &repo,
+                    run.id,
+                    policy,
+                    selected_runner(runner, docker),
+                )
+                .await?;
 
             println!(
                 "{}",
@@ -308,6 +351,7 @@ async fn init(repo: PathBuf) -> Result<()> {
 const DEFAULT_CONFIG: &str = r#"state_db: .openforge/state.db
 artifact_dir: .openforge/artifacts
 worktree_dir: .openforge/worktrees
+plugin_dir: plugins
 max_parallel_agents: 4
 
 providers:
@@ -335,6 +379,11 @@ browser:
   args:
     - packages/browser-worker/dist/index.js
   timeout_seconds: 60
+
+kubernetes:
+  namespace: default
+  image: ghcr.io/gan-007/openforge-runner:latest
+  wait_seconds: 90
 
 environment: {}
 "#;
@@ -435,6 +484,14 @@ database_write:
 
 secrets:
   default: deny
+  allow:
+    - "secret://OPENAI_API_KEY"
+    - "secret://ANTHROPIC_API_KEY"
+    - "secret://GOOGLE_API_KEY"
+    - "secret://OPENROUTER_API_KEY"
+    - "secret://AWS_ACCESS_KEY_ID"
+    - "secret://AWS_SECRET_ACCESS_KEY"
+    - "secret://AWS_SESSION_TOKEN"
 
 cloud_read:
   default: ask
