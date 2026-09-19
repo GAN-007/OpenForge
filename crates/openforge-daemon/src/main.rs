@@ -276,6 +276,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .and_then(Value::as_str)
                 .map(parse_runner)
                 .transpose()?;
+            if docker && runner.is_some() {
+                anyhow::bail!("docker=true and runner cannot be specified together");
+            }
             let branch = if let Some(runner) = runner {
                 state
                     .engine
@@ -539,10 +542,8 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 &format!("secret {secret_name}"),
             )?;
 
-            let broker = EnvironmentSecretBroker::with_max_ttl(
-                std::iter::once(secret_name.clone()),
-                300,
-            );
+            let broker =
+                EnvironmentSecretBroker::with_max_ttl(policy.allowed_secrets(), 300);
             let lease = broker.lease(&secret_name, &audience, ttl_seconds).await?;
             state.engine.store.record_secret_lease(&lease.descriptor)?;
             Ok(json!({
@@ -788,7 +789,15 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         "budget/snapshot" => {
             let run_id = required_uuid(&request.params, "run_id")?;
             let guard = budget_guard_for_run(state, run_id).await?;
-            Ok(serde_json::to_value(guard.detailed_snapshot().await)?)
+            let snapshot = guard.detailed_snapshot().await;
+            Ok(json!({
+                "run_id": run_id,
+                "task_spent_usd": snapshot.task_spent,
+                "run_spent_usd": snapshot.run_spent,
+                "daily_spent_usd": snapshot.daily_spent,
+                "reserved_usd": snapshot.reserved,
+                "limits": snapshot.limits
+            }))
         }
         "artifact/stream/begin" => {
             let media_type = request

@@ -367,10 +367,11 @@ export class OpenForgeClient {
 
   budgetSnapshot(runId: string) {
     return this.rpc<{
-      task_spent: number;
-      run_spent: number;
-      daily_spent: number;
-      reserved: number;
+      run_id: string;
+      task_spent_usd: number;
+      run_spent_usd: number;
+      daily_spent_usd: number;
+      reserved_usd: number;
       limits: {
         per_call: number;
         per_task: number;
