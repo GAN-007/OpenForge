@@ -542,9 +542,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 }
                 openforge_policy::Decision::Deny => {
                     anyhow::bail!(
-                        "secret {} is denied by policy {}",
-                        secret_name,
-                        policy_path
+                        "secret {secret_name} is denied by policy {policy_path}"
                     );
                 }
             }
