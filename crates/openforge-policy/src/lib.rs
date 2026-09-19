@@ -107,6 +107,15 @@ impl AgentPolicy {
         serde_yaml::from_str(&raw).context("parse policy YAML")
     }
 
+    pub fn allowed_secrets(&self) -> Vec<String> {
+        self.secrets
+            .allow
+            .iter()
+            .map(|pattern| pattern.trim_start_matches("secret://").to_string())
+            .filter(|name| !name.trim().is_empty())
+            .collect()
+    }
+
     pub fn evaluate(&self, request: CapabilityRequest<'_>) -> Decision {
         let (rules, subject) = match request {
             CapabilityRequest::ReadPath(path) => (&self.filesystem.read, path.to_string()),

@@ -4,6 +4,7 @@ version.workspace=true
 edition.workspace=true
 license.workspace=true
 [dependencies]
+openforge-acp={path="../openforge-acp"}
 anyhow.workspace=true
 chrono.workspace=true
 futures-util.workspace=true

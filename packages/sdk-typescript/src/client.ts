@@ -1,11 +1,15 @@
 import type {
   ArtifactDescriptor,
+  BudgetSnapshot,
   CapabilitySet,
   EventEnvelope,
   EventIntegrityReport,
+  PluginCapabilityDeclaration,
+  PluginManifest,
   RepositoryIndex,
   Run,
   SearchHit,
+  SecretLeaseDescriptor,
   SymbolGraph,
   SymbolRecord,
   TaskNode,
@@ -86,6 +90,7 @@ export class OpenForgeClient {
     run_id: string;
     policy_path?: string;
     docker?: boolean;
+    runner_backend?: "local" | "docker" | "kubernetes";
   }) {
     return this.rpc<{ integration_branch: string }>(
       "run/execute",
@@ -232,6 +237,185 @@ export class OpenForgeClient {
 
   providers() {
     return this.rpc<{ providers: string[] }>("model/providers");
+  }
+
+  leaseSecret(params: {
+    secret_name: string;
+    audience: string;
+    ttl_seconds?: number;
+    policy_path?: string;
+  }) {
+    return this.rpc<{
+      lease: SecretLeaseDescriptor;
+      value: string;
+    }>("secret/lease", params);
+  }
+
+  revokeSecret(leaseId: string) {
+    return this.rpc<{ revoked: boolean }>("secret/revoke", {
+      lease_id: leaseId,
+    });
+  }
+
+  listSecretLeases() {
+    return this.rpc<unknown[]>("secret/list");
+  }
+
+  acpSpawn(params: {
+    program: string;
+    args?: string[];
+    cwd?: string;
+    environment?: Record<string, string>;
+    timeout_seconds?: number;
+    policy_path?: string;
+  }) {
+    return this.rpc<{ process_id: string }>("acp/spawn", params);
+  }
+
+  acpRequest(processId: string, method: string, params: unknown = null) {
+    return this.rpc<{ result: unknown }>("acp/request", {
+      process_id: processId,
+      method,
+      params,
+    });
+  }
+
+  acpNotify(processId: string, method: string, params: unknown = null) {
+    return this.rpc<{ ok: boolean }>("acp/notify", {
+      process_id: processId,
+      method,
+      params,
+    });
+  }
+
+  acpClose(processId: string) {
+    return this.rpc<{ closed: boolean; persisted?: boolean; reason?: string }>(
+      "acp/close",
+      { process_id: processId },
+    );
+  }
+
+  acpList() {
+    return this.rpc<unknown[]>("acp/list");
+  }
+
+  mcpListTools(serverName: string) {
+    return this.rpc<
+      Array<{
+        name: string;
+        description?: string;
+        inputSchema: unknown;
+        annotations?: unknown;
+      }>
+    >("mcp/list_tools", { server_name: serverName });
+  }
+
+  mcpCallTool(
+    serverName: string,
+    toolName: string,
+    args: unknown,
+    policyPath?: string,
+  ) {
+    return this.rpc<{
+      content: unknown[];
+      isError: boolean;
+      structuredContent?: unknown;
+    }>("mcp/call_tool", {
+      server_name: serverName,
+      tool_name: toolName,
+      arguments: args,
+      policy_path: policyPath,
+    });
+  }
+
+  mcpListResources(serverName: string) {
+    return this.rpc<unknown>("mcp/list_resources", {
+      server_name: serverName,
+    });
+  }
+
+  mcpReadResource(serverName: string, uri: string) {
+    return this.rpc<unknown>("mcp/read_resource", {
+      server_name: serverName,
+      uri,
+    });
+  }
+
+  mcpListPrompts(serverName: string) {
+    return this.rpc<unknown>("mcp/list_prompts", {
+      server_name: serverName,
+    });
+  }
+
+  budgetReserve(runId: string, estimatedUsd: number) {
+    return this.rpc<{
+      reservation_id: string;
+      estimated_usd: number;
+    }>("budget/reserve", {
+      run_id: runId,
+      estimated_usd: estimatedUsd,
+    });
+  }
+
+  budgetSettle(reservationId: string, actualUsd: number) {
+    return this.rpc<{
+      reservation_id: string;
+      run_id: string;
+      estimated_usd: number;
+      actual_usd: number;
+      created_at: string;
+      settled_at: string;
+    }>("budget/settle", {
+      reservation_id: reservationId,
+      actual_usd: actualUsd,
+    });
+  }
+
+  budgetSnapshot(runId: string) {
+    return this.rpc<BudgetSnapshot>("budget/snapshot", {
+      run_id: runId,
+    });
+  }
+
+  artifactStreamBegin(params: {
+    media_type?: string;
+    source?: string;
+  } = {}) {
+    return this.rpc<{ upload_id: string }>("artifact/stream/begin", params);
+  }
+
+  artifactStreamChunk(uploadId: string, base64: string) {
+    return this.rpc<{ upload_id: string; bytes_written: number }>(
+      "artifact/stream/chunk",
+      { upload_id: uploadId, base64 },
+    );
+  }
+
+  artifactStreamCommit(
+    uploadId: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    return this.rpc<ArtifactDescriptor>("artifact/stream/commit", {
+      upload_id: uploadId,
+      metadata: metadata ?? {},
+    });
+  }
+
+  artifactStreamAbort(uploadId: string) {
+    return this.rpc<{ aborted: boolean }>("artifact/stream/abort", {
+      upload_id: uploadId,
+    });
+  }
+
+  listPlugins() {
+    return this.rpc<PluginManifest[]>("plugins/list");
+  }
+
+  validatePluginCapability(pluginId: string, capability: string) {
+    return this.rpc<PluginCapabilityDeclaration>(
+      "plugins/capability/validate",
+      { plugin_id: pluginId, capability },
+    );
   }
 
   async health(): Promise<boolean> {

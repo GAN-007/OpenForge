@@ -216,3 +216,60 @@ export interface TelemetrySnapshot {
   histograms: Record<string, HistogramSnapshot>;
   recent_events: TelemetryEvent[];
 }
+
+export interface SecretLeaseDescriptor {
+  id: string;
+  secret_name: string;
+  issued_at: string;
+  expires_at: string;
+  audience: string;
+  renewable: boolean;
+}
+
+export interface BudgetLimits {
+  per_call: number;
+  per_task: number;
+  per_run: number;
+  daily: number;
+}
+
+export interface BudgetSnapshot {
+  run_id: string;
+  task_spent_usd: number;
+  run_spent_usd: number;
+  daily_spent_usd: number;
+  reserved_usd: number;
+  daily_reserved_usd: number;
+  limits: BudgetLimits;
+}
+
+export interface PluginCapabilities {
+  filesystem: string[];
+  network: string[];
+  secrets: string[];
+  database: string[];
+  shell: string[];
+  mcp: string[];
+  acp: string[];
+  cloud: string[];
+  deployment: string[];
+  browser: string[];
+  git: string[];
+}
+
+export interface PluginManifest {
+  schema: "openforge.plugin/v2";
+  id: string;
+  version: string;
+  runtime: "wasm" | "process" | "mcp";
+  entrypoint: string;
+  api: string;
+  capabilities: PluginCapabilities;
+  contributes: Record<string, string[]>;
+}
+
+export interface PluginCapabilityDeclaration {
+  domain: string;
+  values: string[];
+}
+

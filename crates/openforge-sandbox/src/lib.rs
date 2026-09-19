@@ -308,6 +308,333 @@ impl SandboxBackend for DockerBackend {
     }
 }
 
+
+pub struct KubernetesBackend {
+    pub image: String,
+    pub namespace: String,
+    pub wait_seconds: u64,
+}
+
+impl KubernetesBackend {
+    fn pod_name(&self, lease_id: Uuid) -> String {
+        format!("openforge-{}", lease_id.simple())
+    }
+
+    async fn cleanup_pod(&self, pod_name: &str) {
+        let _ = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "delete".into(),
+                "networkpolicy".into(),
+                pod_name.into(),
+                "--ignore-not-found=true".into(),
+                "--wait=false".into(),
+            ],
+            Duration::from_secs(20),
+        )
+        .await;
+        let _ = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "delete".into(),
+                "pod".into(),
+                pod_name.into(),
+                "--ignore-not-found=true".into(),
+                "--wait=false".into(),
+            ],
+            Duration::from_secs(20),
+        )
+        .await;
+    }
+}
+
+#[async_trait]
+impl SandboxBackend for KubernetesBackend {
+    fn name(&self) -> &str {
+        "kubernetes"
+    }
+
+    async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
+        policy.validate()?;
+        validate_kubernetes_name(&self.namespace, "namespace")?;
+        if self.image.trim().is_empty() {
+            bail!("Kubernetes runner image cannot be empty");
+        }
+
+        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let version = host_command_owned(
+            "kubectl",
+            &["version".into(), "--client=true".into(), "-o".into(), "json".into()],
+            Duration::from_secs(15),
+        )
+        .await
+        .context("kubectl executable unavailable")?;
+        if version.exit_code != 0 {
+            bail!("kubectl unavailable: {}", version.stderr);
+        }
+
+        let lease_id = Uuid::new_v4();
+        let pod_name = self.pod_name(lease_id);
+        let cpu_limit = policy.cpus.to_string();
+        let memory_limit = format!("{}Mi", policy.memory_mb);
+        let disk_limit = format!("{}Mi", policy.disk_mb);
+        let tmp_size = format!("{}Mi", (policy.memory_mb / 4).clamp(64, 1024));
+
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": pod_name,
+                "namespace": self.namespace,
+                "labels": {
+                    "app.kubernetes.io/name": "openforge-runner",
+                    "openforge.dev/sandbox": pod_name
+                }
+            },
+            "spec": {
+                "automountServiceAccountToken": false,
+                "restartPolicy": "Never",
+                "securityContext": {
+                    "runAsNonRoot": true,
+                    "runAsUser": 10001,
+                    "runAsGroup": 10001,
+                    "fsGroup": 10001,
+                    "seccompProfile": {"type": "RuntimeDefault"}
+                },
+                "containers": [{
+                    "name": "runner",
+                    "image": self.image,
+                    "imagePullPolicy": "IfNotPresent",
+                    "workingDir": "/workspace",
+                    "command": ["bash", "-lc", "sleep infinity"],
+                    "resources": {
+                        "requests": {
+                            "cpu": cpu_limit,
+                            "memory": memory_limit
+                        },
+                        "limits": {
+                            "cpu": cpu_limit,
+                            "memory": memory_limit
+                        }
+                    },
+                    "securityContext": {
+                        "allowPrivilegeEscalation": false,
+                        "readOnlyRootFilesystem": policy.security.read_only_root,
+                        "capabilities": {"drop": ["ALL"]}
+                    },
+                    "volumeMounts": [
+                        {"name": "workspace", "mountPath": "/workspace"},
+                        {"name": "tmp", "mountPath": "/tmp"}
+                    ]
+                }],
+                "volumes": [
+                    {"name": "workspace", "emptyDir": {"sizeLimit": disk_limit}},
+                    {"name": "tmp", "emptyDir": {"sizeLimit": tmp_size}}
+                ]
+            }
+        });
+
+        let manifest_path = std::env::temp_dir().join(format!("{pod_name}.json"));
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
+        let apply = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "apply".into(),
+                "-f".into(),
+                manifest_path.display().to_string(),
+            ],
+            Duration::from_secs(30),
+        )
+        .await;
+        let _ = std::fs::remove_file(&manifest_path);
+        let apply = apply?;
+        if apply.exit_code != 0 {
+            self.cleanup_pod(&pod_name).await;
+            bail!("failed to create Kubernetes sandbox: {}", apply.stderr);
+        }
+
+        if !policy.network_enabled {
+            let network_policy = serde_json::json!({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {
+                    "name": pod_name,
+                    "namespace": self.namespace
+                },
+                "spec": {
+                    "podSelector": {
+                        "matchLabels": {"openforge.dev/sandbox": pod_name}
+                    },
+                    "policyTypes": ["Ingress", "Egress"],
+                    "ingress": [],
+                    "egress": []
+                }
+            });
+            let policy_path = std::env::temp_dir().join(format!("{pod_name}.network.json"));
+            std::fs::write(&policy_path, serde_json::to_vec(&network_policy)?)?;
+            let applied = host_command_owned(
+                "kubectl",
+                &[
+                    "-n".into(),
+                    self.namespace.clone(),
+                    "apply".into(),
+                    "-f".into(),
+                    policy_path.display().to_string(),
+                ],
+                Duration::from_secs(30),
+            )
+            .await;
+            let _ = std::fs::remove_file(&policy_path);
+            match applied {
+                Ok(result) if result.exit_code == 0 => {}
+                Ok(result) => {
+                    self.cleanup_pod(&pod_name).await;
+                    bail!("failed to apply Kubernetes network isolation: {}", result.stderr);
+                }
+                Err(error) => {
+                    self.cleanup_pod(&pod_name).await;
+                    return Err(error.context("apply Kubernetes network isolation"));
+                }
+            }
+        }
+
+        let wait = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "wait".into(),
+                "--for=condition=Ready".into(),
+                format!("pod/{pod_name}"),
+                format!("--timeout={}s", self.wait_seconds.clamp(10, 600)),
+            ],
+            Duration::from_secs(self.wait_seconds.clamp(10, 600) + 10),
+        )
+        .await?;
+        if wait.exit_code != 0 {
+            self.cleanup_pod(&pod_name).await;
+            bail!("Kubernetes sandbox did not become ready: {}", wait.stderr);
+        }
+
+        let copy = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "cp".into(),
+                format!("{}/.", canonical.display()),
+                format!("{pod_name}:/workspace"),
+            ],
+            Duration::from_secs(120),
+        )
+        .await?;
+        if copy.exit_code != 0 {
+            self.cleanup_pod(&pod_name).await;
+            bail!("failed to upload workspace to Kubernetes sandbox: {}", copy.stderr);
+        }
+
+        Ok(SandboxLease {
+            id: lease_id,
+            backend: self.name().into(),
+            workspace: canonical,
+            policy,
+        })
+    }
+
+    async fn exec(&self, lease: &SandboxLease, request: ExecRequest) -> Result<ExecResult> {
+        validate_exec_request(&request)?;
+        let relative_cwd = normalized_relative(&request.cwd)?;
+        let pod_name = self.pod_name(lease.id);
+        let remote_cwd = if relative_cwd.as_os_str().is_empty() {
+            "/workspace".to_string()
+        } else {
+            format!("/workspace/{}", relative_cwd.display())
+        };
+
+        let mut environment = lease.policy.environment.clone();
+        environment.extend(request.environment.clone());
+
+        let mut arguments = vec![
+            "-n".to_string(),
+            self.namespace.clone(),
+            "exec".into(),
+            pod_name,
+            "--".into(),
+            "env".into(),
+        ];
+        for (key, value) in environment {
+            validate_env_key(&key)?;
+            arguments.push(format!("{key}={value}"));
+        }
+        arguments.extend([
+            "bash".into(),
+            "-lc".into(),
+            "cd \"$1\" && shift && exec \"$@\"".into(),
+            "openforge".into(),
+            remote_cwd,
+        ]);
+        arguments.extend(request.argv);
+
+        let mut command = Command::new("kubectl");
+        command
+            .args(&arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        run_bounded(
+            command,
+            request.timeout_seconds.max(1),
+            lease.policy.max_stdout_bytes,
+            lease.policy.max_stderr_bytes,
+        )
+        .await
+    }
+
+    async fn destroy(&self, lease: SandboxLease) -> Result<()> {
+        let pod_name = self.pod_name(lease.id);
+        let copy_back = host_command_owned(
+            "kubectl",
+            &[
+                "-n".into(),
+                self.namespace.clone(),
+                "cp".into(),
+                format!("{pod_name}:/workspace/."),
+                lease.workspace.display().to_string(),
+            ],
+            Duration::from_secs(120),
+        )
+        .await;
+        self.cleanup_pod(&pod_name).await;
+
+        match copy_back {
+            Ok(result) if result.exit_code == 0 => Ok(()),
+            Ok(result) => bail!("failed to download Kubernetes workspace: {}", result.stderr),
+            Err(error) => Err(error.context("download Kubernetes workspace")),
+        }
+    }
+}
+
+fn validate_kubernetes_name(value: &str, kind: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 63
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!("invalid Kubernetes {kind} {value:?}");
+    }
+    Ok(())
+}
+
 async fn run_bounded(
     mut command: Command,
     timeout_seconds: u64,
@@ -366,6 +693,27 @@ async fn host_command(program: &str, args: &[&str], duration: Duration) -> Resul
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     run_bounded(command, duration.as_secs().max(1), 1024 * 1024, 1024 * 1024).await
+}
+
+
+async fn host_command_owned(
+    program: &str,
+    args: &[String],
+    duration: Duration,
+) -> Result<ExecResult> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    run_bounded(
+        command,
+        duration.as_secs().max(1),
+        4 * 1024 * 1024,
+        4 * 1024 * 1024,
+    )
+    .await
 }
 
 fn validate_exec_request(request: &ExecRequest) -> Result<()> {

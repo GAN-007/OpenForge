@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use openforge_protocol::{DataClassification, ModelSpec};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenForgeConfig {
@@ -11,6 +11,8 @@ pub struct OpenForgeConfig {
     pub artifact_dir: String,
     #[serde(default = "default_worktree_dir")]
     pub worktree_dir: String,
+    #[serde(default = "default_plugin_dir")]
+    pub plugin_dir: PathBuf,
     #[serde(default = "default_parallel")]
     pub max_parallel_agents: usize,
     #[serde(default)]
@@ -20,12 +22,15 @@ pub struct OpenForgeConfig {
     #[serde(default)]
     pub browser: BrowserWorkerConfig,
     #[serde(default)]
+    pub kubernetes: KubernetesRunnerConfig,
+    #[serde(default)]
     pub environment: BTreeMap<String, String>,
 }
 
 fn default_state_db() -> String { ".openforge/state.db".into() }
 fn default_artifact_dir() -> String { ".openforge/artifacts".into() }
 fn default_worktree_dir() -> String { ".openforge/worktrees".into() }
+fn default_plugin_dir() -> PathBuf { PathBuf::from("plugins") }
 fn default_parallel() -> usize { 4 }
 
 impl Default for OpenForgeConfig {
@@ -34,10 +39,12 @@ impl Default for OpenForgeConfig {
             state_db: default_state_db(),
             artifact_dir: default_artifact_dir(),
             worktree_dir: default_worktree_dir(),
+            plugin_dir: default_plugin_dir(),
             max_parallel_agents: default_parallel(),
             providers: vec![],
             mcp_servers: vec![],
             browser: BrowserWorkerConfig::default(),
+            kubernetes: KubernetesRunnerConfig::default(),
             environment: BTreeMap::new(),
         }
     }
@@ -66,6 +73,30 @@ pub struct McpServerConfig {
     #[serde(default = "default_protocol_bytes")]
     pub max_response_bytes: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesRunnerConfig {
+    #[serde(default = "default_kubernetes_namespace")]
+    pub namespace: String,
+    #[serde(default = "default_kubernetes_image")]
+    pub image: String,
+    #[serde(default = "default_kubernetes_wait_seconds")]
+    pub wait_seconds: u64,
+}
+
+impl Default for KubernetesRunnerConfig {
+    fn default() -> Self {
+        Self {
+            namespace: default_kubernetes_namespace(),
+            image: default_kubernetes_image(),
+            wait_seconds: default_kubernetes_wait_seconds(),
+        }
+    }
+}
+
+fn default_kubernetes_namespace() -> String { "default".into() }
+fn default_kubernetes_image() -> String { "ghcr.io/gan-007/openforge-runner:latest".into() }
+fn default_kubernetes_wait_seconds() -> u64 { 90 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserWorkerConfig {
