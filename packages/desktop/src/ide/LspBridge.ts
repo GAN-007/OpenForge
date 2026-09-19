@@ -88,7 +88,7 @@ function workspaceEdit(monaco: Monaco, edit?: LspWorkspaceEdit) {
   const edits: Array<{
     resource: ReturnType<Monaco["Uri"]["parse"]>;
     textEdit: { range: ReturnType<typeof range>; text: string };
-    versionId?: number;
+    versionId: number | undefined;
   }> = [];
   for (const [uri, textEdits] of Object.entries(edit?.changes ?? {})) {
     for (const textEdit of textEdits) {
@@ -98,6 +98,7 @@ function workspaceEdit(monaco: Monaco, edit?: LspWorkspaceEdit) {
           range: range(monaco, textEdit.range),
           text: textEdit.newText,
         },
+        versionId: undefined,
       });
     }
   }
@@ -395,8 +396,10 @@ export function registerLspProviders(
               .filter((action) => action.edit)
               .map((action) => ({
                 title: action.title,
-                kind: action.kind,
-                isPreferred: action.isPreferred,
+                ...(action.kind !== undefined ? { kind: action.kind } : {}),
+                ...(action.isPreferred !== undefined
+                  ? { isPreferred: action.isPreferred }
+                  : {}),
                 edit: workspaceEdit(monaco, action.edit),
               })),
             dispose() {},
