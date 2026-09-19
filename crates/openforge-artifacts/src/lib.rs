@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -141,18 +141,52 @@ impl ArtifactStore {
             &fs::read(&metadata_path)
                 .with_context(|| format!("read artifact stream metadata {}", metadata_path.display()))?,
         )?;
-        let bytes = fs::read(&stream_path)
-            .with_context(|| format!("read artifact stream {}", stream_path.display()))?;
         let media_type = stream_metadata
             .get("media_type")
             .and_then(Value::as_str)
-            .unwrap_or("application/octet-stream");
+            .unwrap_or("application/octet-stream")
+            .to_string();
         let source = stream_metadata
             .get("source")
             .and_then(Value::as_str)
-            .unwrap_or("rpc-stream");
-        let descriptor = self.put_bytes(&bytes, media_type, source, metadata)?;
-        fs::remove_file(&stream_path)?;
+            .unwrap_or("rpc-stream")
+            .to_string();
+
+        let (digest, bytes) = hash_file(&stream_path)?;
+        let object = self.object_path(&digest)?;
+        if let Some(parent) = object.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if object.exists() {
+            let (existing_digest, existing_bytes) = hash_file(&object)?;
+            if existing_digest != digest || existing_bytes != bytes {
+                bail!("artifact digest collision or corrupted object");
+            }
+            fs::remove_file(&stream_path)?;
+        } else {
+            match fs::rename(&stream_path, &object) {
+                Ok(()) => {}
+                Err(_error) if object.exists() => {
+                    let (existing_digest, existing_bytes) = hash_file(&object)?;
+                    if existing_digest != digest || existing_bytes != bytes {
+                        bail!("artifact digest collision or corrupted object");
+                    }
+                    let _ = fs::remove_file(&stream_path);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let descriptor = ArtifactDescriptor {
+            digest,
+            bytes,
+            media_type,
+            source,
+            created_at: Utc::now(),
+            metadata,
+        };
+        self.write_descriptor(&descriptor)?;
         fs::remove_file(&metadata_path)?;
         Ok(descriptor)
     }
@@ -252,6 +286,23 @@ impl ArtifactStore {
     }
 }
 
+fn hash_file(path: &Path) -> Result<(String, u64)> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("open artifact for hashing {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        total = total.saturating_add(read as u64);
+    }
+    Ok((hex::encode(hasher.finalize()), total))
+}
+
 fn validate_upload_id(upload_id: &str) -> Result<()> {
     if upload_id.len() != 36
         || !upload_id
@@ -274,6 +325,23 @@ fn validate_digest(digest: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_upload_is_finalized_without_buffering_the_whole_payload() {
+        let root = std::env::temp_dir().join(format!(
+            "openforge-artifacts-stream-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = ArtifactStore::open(&root).unwrap();
+        let upload = store.begin_stream("text/plain", "stream-test").unwrap();
+        store.write_stream_chunk(&upload, b"open").unwrap();
+        store.write_stream_chunk(&upload, b"forge").unwrap();
+        let descriptor = store.commit_stream(&upload, BTreeMap::new()).unwrap();
+        assert_eq!(descriptor.bytes, 9);
+        assert_eq!(store.get(&descriptor.digest).unwrap(), b"openforge");
+        assert!(!root.join("tmp").join(format!("{upload}.stream")).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn stores_and_verifies_content_addressed_bytes() {
