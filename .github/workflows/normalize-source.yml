@@ -10,42 +10,51 @@ permissions:
 
 jobs:
   normalize:
-    if: github.event.head_commit.message != 'chore: normalize source and lock dependencies'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
-
+      - name: Stop after normalization commit
+        id: guard
+        shell: bash
+        run: |
+          if [ "$(git log -1 --pretty=%s)" = "chore: normalize source and lock dependencies" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.guard.outputs.skip != 'true'
         with:
           toolchain: "1.90.0"
           components: rustfmt
-
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
-
-      - run: python -m pip install ruff
-
+      - name: Install Ruff
+        if: steps.guard.outputs.skip != 'true'
+        run: python -m pip install ruff
       - uses: pnpm/action-setup@v4
+        if: steps.guard.outputs.skip != 'true'
         with:
           version: "10.15.1"
-
       - uses: actions/setup-node@v4
+        if: steps.guard.outputs.skip != 'true'
         with:
           node-version: "22"
-
       - name: Normalize checked-in sources and dependency locks
+        if: steps.guard.outputs.skip != 'true'
         run: |
           cargo fmt --all
           cargo generate-lockfile
           ruff check python --fix
           ruff format python
           pnpm install --lockfile-only --no-frozen-lockfile
-
       - name: Commit normalized source and lockfiles
+        if: steps.guard.outputs.skip != 'true'
         run: |
           if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
             exit 0
