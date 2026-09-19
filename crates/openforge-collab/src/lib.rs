@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
