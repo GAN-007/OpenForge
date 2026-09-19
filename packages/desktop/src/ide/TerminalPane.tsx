@@ -7,8 +7,9 @@ export function TerminalPane(props: {
   client: OpenForgeClient;
   repo: string;
   platform: string;
+  initialCommand?: string;
 }) {
-  const { client, repo, platform } = props;
+  const { client, repo, platform, initialCommand = "" } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [descriptor, setDescriptor] = useState<TerminalDescriptor | null>(null);
   const [status, setStatus] = useState("starting");
@@ -76,7 +77,12 @@ export function TerminalPane(props: {
         current = created;
         setDescriptor(created);
         socket = client.terminalSocket(created.id);
-        socket.onopen = () => setStatus("connected");
+        socket.onopen = () => {
+          setStatus("connected");
+          if (initialCommand.trim()) {
+            socket?.send(initialCommand.trim() + "\r");
+          }
+        };
         socket.onmessage = (message) => {
           try {
             const event = JSON.parse(String(message.data)) as TerminalEvent;
@@ -100,7 +106,7 @@ export function TerminalPane(props: {
       terminal.dispose();
       if (current) void client.closeTerminal(current.id);
     };
-  }, [client, platform, repo]);
+  }, [client, initialCommand, platform, repo]);
 
   return (
     <section className="terminal-pane">
