@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use openforge_core::{Engine, OpenForgeConfig};
+use openforge_core::{Engine, OpenForgeConfig, RunnerBackend};
 use openforge_policy::AgentPolicy;
 use openforge_protocol::AutonomyLevel;
 use serde_json::Value;
@@ -44,6 +44,8 @@ enum Command {
         policy: PathBuf,
         #[arg(long)]
         docker: bool,
+        #[arg(long, value_enum)]
+        runner: Option<RunnerChoice>,
     },
     Run {
         objective: String,
@@ -57,6 +59,8 @@ enum Command {
         policy: PathBuf,
         #[arg(long)]
         docker: bool,
+        #[arg(long, value_enum)]
+        runner: Option<RunnerChoice>,
     },
     Status {
         run_id: Uuid,
@@ -99,6 +103,24 @@ enum MemoryCommand {
         #[arg(long)]
         scope: Option<String>,
     },
+}
+
+
+#[derive(Clone, Copy, ValueEnum)]
+enum RunnerChoice {
+    Local,
+    Docker,
+    Kubernetes,
+}
+
+impl From<RunnerChoice> for RunnerBackend {
+    fn from(value: RunnerChoice) -> Self {
+        match value {
+            RunnerChoice::Local => Self::Local,
+            RunnerChoice::Docker => Self::Docker,
+            RunnerChoice::Kubernetes => Self::Kubernetes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum, Default)]
@@ -158,10 +180,19 @@ async fn main() -> Result<()> {
             repo,
             policy,
             docker,
+            runner,
         } => {
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run_id, policy, docker).await?;
+            if docker && runner.is_some() {
+                anyhow::bail!("--docker and --runner cannot be used together");
+            }
+            let integration_branch = if let Some(runner) = runner {
+                engine
+                    .execute_run_with_backend(&repo, run_id, policy, runner.into())
+                    .await?
+            } else {
+                engine.execute_run(&repo, run_id, policy, docker).await?
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -178,6 +209,7 @@ async fn main() -> Result<()> {
             mode,
             policy,
             docker,
+            runner,
         } => {
             let run = engine
                 .create_run(&repo, objective, mode.into(), budget)
@@ -186,8 +218,16 @@ async fn main() -> Result<()> {
             eprintln!("planned {} tasks for run {}", tasks.len(), run.id);
 
             let policy = AgentPolicy::from_yaml(policy)?;
-            let integration_branch =
-                engine.execute_run(&repo, run.id, policy, docker).await?;
+            if docker && runner.is_some() {
+                anyhow::bail!("--docker and --runner cannot be used together");
+            }
+            let integration_branch = if let Some(runner) = runner {
+                engine
+                    .execute_run_with_backend(&repo, run.id, policy, runner.into())
+                    .await?
+            } else {
+                engine.execute_run(&repo, run.id, policy, docker).await?
+            };
 
             println!(
                 "{}",
@@ -308,7 +348,12 @@ async fn init(repo: PathBuf) -> Result<()> {
 const DEFAULT_CONFIG: &str = r#"state_db: .openforge/state.db
 artifact_dir: .openforge/artifacts
 worktree_dir: .openforge/worktrees
+plugin_dir: plugins
 max_parallel_agents: 4
+
+runner:
+  backend: local
+  image: ghcr.io/gan-007/openforge-runner:latest
 
 providers:
   - name: local
@@ -435,6 +480,10 @@ database_write:
 
 secrets:
   default: deny
+  allow:
+    - "secret://OPENAI_API_KEY"
+    - "secret://ANTHROPIC_API_KEY"
+    - "secret://GEMINI_API_KEY"
 
 cloud_read:
   default: ask
