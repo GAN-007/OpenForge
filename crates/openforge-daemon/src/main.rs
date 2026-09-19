@@ -10,14 +10,18 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
-use openforge_core::{CompletionInput, Engine, OpenForgeConfig};
+use openforge_core::{CompletionInput, Engine, OpenForgeConfig, RunnerBackend};
+use openforge_cost::{BudgetGuard, BudgetLimits};
 use openforge_events::verify_event_chain;
+use openforge_mcp::{McpProcessConfig, McpStdioClient};
+use openforge_plugins::PluginHost;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
     AutonomyLevel, CapabilitySet, EventEnvelope, RpcError, RpcRequest, RpcResponse,
     PROTOCOL_VERSION,
 };
 use openforge_search::SearchIndex;
+use openforge_secrets::{EnvironmentSecretBroker, SecretBroker};
 use openforge_symbols::SymbolGraph;
 use openforge_telemetry::TelemetryRegistry;
 use serde_json::{json, Value};
@@ -25,7 +29,7 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -202,6 +206,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "symbols",
                 "artifacts",
                 "telemetry",
+                "secrets",
+                "plugins",
+                "artifact_stream",
+                "budget_reservations",
+                "kubernetes_runner",
             ]
             .into_iter()
             .map(|name| (name.to_string(), true))
@@ -261,10 +270,26 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .get("docker")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let runner_backend = request
+                .params
+                .get("runner_backend")
+                .and_then(Value::as_str)
+                .map(RunnerBackend::parse)
+                .transpose()?
+                .unwrap_or(if docker {
+                    RunnerBackend::Docker
+                } else {
+                    RunnerBackend::Local
+                });
             let policy = AgentPolicy::from_yaml(policy_path)?;
             let branch = state
                 .engine
-                .execute_run(PathBuf::from(repo).as_path(), run_id, policy, docker)
+                .execute_run_with_backend(
+                    PathBuf::from(repo).as_path(),
+                    run_id,
+                    policy,
+                    runner_backend,
+                )
                 .await?;
             Ok(json!({"integration_branch": branch}))
         }
@@ -492,9 +517,423 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             }))
         }
         "telemetry/snapshot" => Ok(serde_json::to_value(state.telemetry.snapshot())?),
+        "secret/lease" => {
+            let secret_name = required_string(&request.params, "secret_name")?;
+            let audience = required_string(&request.params, "audience")?;
+            let ttl_seconds = request
+                .params
+                .get("ttl_seconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(60)
+                .clamp(1, 300);
+            let policy_path = request
+                .params
+                .get("policy_path")
+                .and_then(Value::as_str)
+                .unwrap_or("config/policies/development.yaml");
+            let policy = AgentPolicy::from_yaml(policy_path)?;
+            let capability = format!("secret://{secret_name}");
+            match policy.evaluate(CapabilityRequest::Secret(&capability)) {
+                openforge_policy::Decision::Allow => {}
+                openforge_policy::Decision::Ask => {
+                    anyhow::bail!(
+                        "secret {} requires approval under policy {}",
+                        secret_name,
+                        policy_path
+                    );
+                }
+                openforge_policy::Decision::Deny => {
+                    anyhow::bail!(
+                        "secret {} is denied by policy {}",
+                        secret_name,
+                        policy_path
+                    );
+                }
+            }
+
+            let mut allowed = policy.allowed_secrets();
+            if !allowed.iter().any(|name| name == &secret_name) {
+                allowed.push(secret_name.clone());
+            }
+            let broker = EnvironmentSecretBroker::with_max_ttl(allowed, 300);
+            let lease = broker.lease(&secret_name, &audience, ttl_seconds).await?;
+            let value = lease.expose()?.to_string();
+            state.engine.store.record_secret_lease(&lease.descriptor)?;
+            Ok(json!({
+                "lease": lease.descriptor,
+                "value": value
+            }))
+        }
+        "secret/revoke" => {
+            let lease_id = required_uuid(&request.params, "lease_id")?;
+            Ok(json!({
+                "revoked": state.engine.store.revoke_secret_lease(lease_id)?
+            }))
+        }
+        "secret/list" => {
+            Ok(serde_json::to_value(state.engine.store.list_secret_leases()?)?)
+        }
+        "acp/spawn" => {
+            let program = required_string(&request.params, "program")?;
+            let args = optional_string_array(&request.params, "args")?;
+            let cwd = request
+                .params
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let environment: BTreeMap<String, String> = serde_json::from_value(
+                request
+                    .params
+                    .get("environment")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .context("ACP environment must be an object of string values")?;
+            let policy_path = request
+                .params
+                .get("policy_path")
+                .and_then(Value::as_str)
+                .unwrap_or("config/policies/development.yaml");
+            let policy = AgentPolicy::from_yaml(policy_path)?;
+            match policy.evaluate(CapabilityRequest::Acp(&program)) {
+                openforge_policy::Decision::Allow => {}
+                openforge_policy::Decision::Ask => {
+                    anyhow::bail!("ACP spawn requires approval for program {program}");
+                }
+                openforge_policy::Decision::Deny => {
+                    anyhow::bail!("ACP program {program} is denied by policy");
+                }
+            }
+
+            let mut config = openforge_acp::AcpProcessConfig::new(&program, args);
+            config.cwd = cwd;
+            config.environment = environment;
+            config.request_timeout = Duration::from_secs(
+                request
+                    .params
+                    .get("timeout_seconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(120)
+                    .clamp(1, 600),
+            );
+            let mut client = openforge_acp::AcpAgentClient::spawn_with_config(config).await?;
+            let process_id = match state.engine.store.register_acp_process(&program) {
+                Ok(process_id) => process_id,
+                Err(error) => {
+                    let _ = client.terminate().await;
+                    return Err(error);
+                }
+            };
+            state
+                .engine
+                .acp_clients
+                .lock()
+                .await
+                .insert(process_id, Arc::new(tokio::sync::Mutex::new(client)));
+            Ok(json!({"process_id": process_id}))
+        }
+        "acp/request" => {
+            let process_id = required_uuid(&request.params, "process_id")?;
+            let method = required_string(&request.params, "method")?;
+            let params = request.params.get("params").cloned().unwrap_or(Value::Null);
+            let client = {
+                let clients = state.engine.acp_clients.lock().await;
+                clients
+                    .get(&process_id)
+                    .cloned()
+                    .context("ACP process not found")?
+            };
+            let mut client = client.lock().await;
+            let response = client.request(&method, params).await?;
+            Ok(json!({"result": response}))
+        }
+        "acp/notify" => {
+            let process_id = required_uuid(&request.params, "process_id")?;
+            let method = required_string(&request.params, "method")?;
+            let params = request.params.get("params").cloned().unwrap_or(Value::Null);
+            let client = {
+                let clients = state.engine.acp_clients.lock().await;
+                clients
+                    .get(&process_id)
+                    .cloned()
+                    .context("ACP process not found")?
+            };
+            client.lock().await.notify(&method, params).await?;
+            Ok(json!({"ok": true}))
+        }
+        "acp/close" => {
+            let process_id = required_uuid(&request.params, "process_id")?;
+            let client = state.engine.acp_clients.lock().await.remove(&process_id);
+            if let Some(client) = client {
+                client.lock().await.terminate().await?;
+                let persisted = state.engine.store.deregister_acp_process(process_id)?;
+                Ok(json!({"closed": true, "persisted": persisted}))
+            } else {
+                Ok(json!({"closed": false, "reason": "process not found"}))
+            }
+        }
+        "acp/list" => {
+            Ok(serde_json::to_value(state.engine.store.list_acp_processes()?)?)
+        }
+        "mcp/list_tools" => {
+            let server_name = required_string(&request.params, "server_name")?;
+            let mut client = initialized_mcp_client(state, &server_name).await?;
+            let result = client.list_tools().await;
+            let cleanup = client.shutdown().await;
+            let result = result?;
+            cleanup?;
+            Ok(serde_json::to_value(result)?)
+        }
+        "mcp/call_tool" => {
+            let server_name = required_string(&request.params, "server_name")?;
+            let tool_name = required_string(&request.params, "tool_name")?;
+            let arguments = request
+                .params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let policy_path = request
+                .params
+                .get("policy_path")
+                .and_then(Value::as_str)
+                .unwrap_or("config/policies/development.yaml");
+            let policy = AgentPolicy::from_yaml(policy_path)?;
+            match policy.evaluate(CapabilityRequest::Mcp(&tool_name)) {
+                openforge_policy::Decision::Allow => {}
+                openforge_policy::Decision::Ask => {
+                    anyhow::bail!("MCP tool {tool_name} requires approval");
+                }
+                openforge_policy::Decision::Deny => {
+                    anyhow::bail!("MCP tool {tool_name} is denied by policy");
+                }
+            }
+            state.engine.tool_bus.mcp_call(&server_name, &tool_name, arguments).await
+        }
+        "mcp/list_resources" => {
+            let server_name = required_string(&request.params, "server_name")?;
+            let mut client = initialized_mcp_client(state, &server_name).await?;
+            let result = client.list_resources().await;
+            let cleanup = client.shutdown().await;
+            let result = result?;
+            cleanup?;
+            Ok(result)
+        }
+        "mcp/read_resource" => {
+            let server_name = required_string(&request.params, "server_name")?;
+            let uri = required_string(&request.params, "uri")?;
+            let mut client = initialized_mcp_client(state, &server_name).await?;
+            let result = client.read_resource(&uri).await;
+            let cleanup = client.shutdown().await;
+            let result = result?;
+            cleanup?;
+            Ok(result)
+        }
+        "mcp/list_prompts" => {
+            let server_name = required_string(&request.params, "server_name")?;
+            let mut client = initialized_mcp_client(state, &server_name).await?;
+            let result = client.list_prompts().await;
+            let cleanup = client.shutdown().await;
+            let result = result?;
+            cleanup?;
+            Ok(result)
+        }
+        "budget/reserve" => {
+            let run_id = required_uuid(&request.params, "run_id")?;
+            let estimated = request
+                .params
+                .get("estimated_usd")
+                .and_then(Value::as_f64)
+                .context("estimated_usd is required")?;
+            let limits = budget_limits_for_run(state, run_id)?;
+            let (_, settled) = state.engine.store.budget_usage(run_id)?;
+            let (_, daily_settled) = state.engine.store.daily_budget_usage()?;
+            let run_spent = state.engine.store.run_cost(run_id)? + settled;
+            let daily_spent = state.engine.store.daily_cost()? + daily_settled;
+            let guard = BudgetGuard::with_usage(
+                limits.clone(),
+                0.0,
+                run_spent,
+                daily_spent,
+            )?;
+            let _reservation = guard.reserve(estimated).await?;
+            let reservation_id = state.engine.store.register_budget_reservation(
+                run_id,
+                estimated,
+                limits.per_run,
+            )?;
+            Ok(json!({
+                "reservation_id": reservation_id,
+                "estimated_usd": estimated
+            }))
+        }
+        "budget/settle" => {
+            let reservation_id = required_uuid(&request.params, "reservation_id")?;
+            let actual = request
+                .params
+                .get("actual_usd")
+                .and_then(Value::as_f64)
+                .context("actual_usd is required")?;
+            let reservation = state
+                .engine
+                .store
+                .budget_reservation(reservation_id)?
+                .context("budget reservation not found")?;
+            let limits = budget_limits_for_run(state, reservation.run_id)?;
+            let (_, settled) = state.engine.store.budget_usage(reservation.run_id)?;
+            let (_, daily_settled) = state.engine.store.daily_budget_usage()?;
+            let run_spent = state.engine.store.run_cost(reservation.run_id)? + settled;
+            let daily_spent = state.engine.store.daily_cost()? + daily_settled;
+            let guard = BudgetGuard::with_usage(
+                limits,
+                0.0,
+                run_spent,
+                daily_spent,
+            )?;
+            guard.reserve(actual).await?.settle(actual).await?;
+            let settled = state
+                .engine
+                .store
+                .record_settled_cost(reservation_id, actual)?;
+            Ok(serde_json::to_value(settled)?)
+        }
+        "budget/snapshot" => {
+            let run_id = required_uuid(&request.params, "run_id")?;
+            let limits = budget_limits_for_run(state, run_id)?;
+            let (reserved, settled) = state.engine.store.budget_usage(run_id)?;
+            let (daily_reserved, daily_settled) = state.engine.store.daily_budget_usage()?;
+            let run_spent = state.engine.store.run_cost(run_id)? + settled;
+            let daily_spent = state.engine.store.daily_cost()? + daily_settled;
+            let guard = BudgetGuard::with_usage(
+                limits.clone(),
+                0.0,
+                run_spent,
+                daily_spent,
+            )?;
+            let (task, run, daily) = guard.snapshot().await;
+            Ok(json!({
+                "run_id": run_id,
+                "task_spent_usd": task,
+                "run_spent_usd": run,
+                "daily_spent_usd": daily,
+                "reserved_usd": reserved,
+                "daily_reserved_usd": daily_reserved,
+                "limits": limits
+            }))
+        }
+        "artifact/stream/begin" => {
+            let media_type = request
+                .params
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            let source = request
+                .params
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("rpc-stream");
+            let upload_id = state.artifacts.begin_stream(media_type, source)?;
+            Ok(json!({"upload_id": upload_id}))
+        }
+        "artifact/stream/chunk" => {
+            let upload_id = required_string(&request.params, "upload_id")?;
+            let encoded = required_string(&request.params, "base64")?;
+            let bytes = BASE64
+                .decode(encoded.as_bytes())
+                .context("artifact stream chunk base64 is invalid")?;
+            state.artifacts.write_stream_chunk(&upload_id, &bytes)?;
+            Ok(json!({
+                "upload_id": upload_id,
+                "bytes_written": bytes.len()
+            }))
+        }
+        "artifact/stream/commit" => {
+            let upload_id = required_string(&request.params, "upload_id")?;
+            let metadata: BTreeMap<String, Value> = serde_json::from_value(
+                request
+                    .params
+                    .get("metadata")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .context("artifact metadata must be an object")?;
+            Ok(serde_json::to_value(
+                state.artifacts.commit_stream(&upload_id, metadata)?,
+            )?)
+        }
+        "artifact/stream/abort" => {
+            let upload_id = required_string(&request.params, "upload_id")?;
+            Ok(json!({
+                "aborted": state.artifacts.abort_stream(&upload_id)?
+            }))
+        }
+        "plugins/list" => {
+            let host = PluginHost::open(&state.engine.config.plugin_dir)?;
+            Ok(serde_json::to_value(host.list())?)
+        }
+        "plugins/capability/validate" => {
+            let plugin_id = required_string(&request.params, "plugin_id")?;
+            let capability = required_string(&request.params, "capability")?;
+            let host = PluginHost::open(&state.engine.config.plugin_dir)?;
+            Ok(serde_json::to_value(
+                host.validate_capability(&plugin_id, &capability)?,
+            )?)
+        }
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
         _ => anyhow::bail!("unknown RPC method {}", request.method),
     }
+}
+
+async fn initialized_mcp_client(
+    state: &AppState,
+    server_name: &str,
+) -> Result<McpStdioClient> {
+    let server = state
+        .engine
+        .config
+        .mcp_servers
+        .iter()
+        .find(|candidate| candidate.name == server_name)
+        .with_context(|| format!("unknown MCP server {server_name}"))?;
+    let mut config = McpProcessConfig::new(server.program.clone(), server.args.clone());
+    config.cwd = server.cwd.as_ref().map(PathBuf::from);
+    config.environment = server.environment.clone();
+    config.request_timeout = Duration::from_secs(server.timeout_seconds.max(1));
+    config.max_response_bytes = server.max_response_bytes.max(1024);
+
+    let mut client = McpStdioClient::spawn_with_config(config).await?;
+    client
+        .initialize("openforge", env!("CARGO_PKG_VERSION"))
+        .await?;
+    Ok(client)
+}
+
+fn budget_limits_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetLimits> {
+    if let Some(limits) = state.engine.store.budget_limits(run_id)? {
+        return Ok(BudgetLimits {
+            per_call: limits.per_call,
+            per_task: limits.per_task,
+            per_run: limits.per_run,
+            daily: limits.daily,
+        });
+    }
+
+    let run = state.engine.store.get_run(run_id)?.context("run not found")?;
+    let limits = BudgetLimits {
+        per_call: run.budget.hard_limit.min(1.0),
+        per_task: run.budget.hard_limit.min(5.0),
+        per_run: run.budget.hard_limit,
+        daily: run.budget.hard_limit.max(100.0),
+    };
+    state.engine.store.set_budget_limits(
+        run_id,
+        &openforge_store::BudgetLimitsRecord {
+            per_call: limits.per_call,
+            per_task: limits.per_task,
+            per_run: limits.per_run,
+            daily: limits.daily,
+        },
+    )?;
+    Ok(limits)
 }
 
 fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvelope>> {
@@ -560,6 +999,13 @@ fn evaluate_policy(
         openforge_policy::Decision::Deny => "deny",
     }
     .into())
+}
+
+fn optional_string_array(params: &Value, field: &str) -> Result<Vec<String>> {
+    match params.get(field) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(_) => string_array(params, field),
+    }
 }
 
 fn string_array(params: &Value, field: &str) -> Result<Vec<String>> {
