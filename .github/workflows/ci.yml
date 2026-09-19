@@ -80,3 +80,14 @@ jobs:
         with:
           gradle-version: "8.13"
       - run: gradle -p jetbrains buildPlugin
+
+  evals:
+    name: Market readiness
+    needs: [rust, typescript, python, schemas, jetbrains]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+      - run: cargo run -p openforge-evals --release -- --root . --policy config/policies/development.yaml
