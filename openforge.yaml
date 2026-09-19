@@ -30,4 +30,9 @@ browser:
     - packages/browser-worker/dist/index.js
   timeout_seconds: 60
 
+kubernetes:
+  namespace: default
+  image: ghcr.io/gan-007/openforge-runner:latest
+  wait_seconds: 90
+
 environment: {}
