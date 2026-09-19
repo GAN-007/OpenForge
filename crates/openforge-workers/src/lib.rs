@@ -572,7 +572,8 @@ fn parse_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableJob> {
         task_id: task_id
             .map(|value| Uuid::parse_str(&value).map_err(to_sql_error))
             .transpose()?,
-        status: JobStatus::parse(&status).map_err(to_sql_error)?,
+        status: JobStatus::parse(&status)
+            .map_err(|error| to_sql_error(std::io::Error::other(error.to_string())))?,
         payload: serde_json::from_str(&payload).map_err(to_sql_error)?,
         required_capabilities: serde_json::from_str(&capabilities).map_err(to_sql_error)?,
         attempts,
