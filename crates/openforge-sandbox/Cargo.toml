@@ -9,5 +9,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 openforge-protocol = { path = "../openforge-protocol" }
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 uuid.workspace = true
