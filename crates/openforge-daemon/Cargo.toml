@@ -40,3 +40,4 @@ openforge-workers = { path = "../openforge-workers" }
 serde.workspace = true
 url.workspace = true
 futures-util.workspace = true
+openforge-browser = { path = "../openforge-browser" }
