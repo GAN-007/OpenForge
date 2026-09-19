@@ -1,3 +1,4 @@
+use crate::ToolBus;
 use anyhow::{bail, Context, Result};
 use openforge_models::{ModelProvider, ModelRouter};
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
@@ -6,10 +7,10 @@ use openforge_protocol::{
 };
 use openforge_sandbox::{ExecRequest, SandboxBackend, SandboxLease};
 use openforge_store::{CostRecord, Store};
-use crate::ToolBus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
+    collections::BTreeSet,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -54,6 +55,23 @@ pub enum AgentAction {
     Finish { success: bool, summary: String },
 }
 
+impl AgentAction {
+    fn tool_name(&self) -> &'static str {
+        match self {
+            Self::ReadFile { .. } => "read_file",
+            Self::WriteFile { .. } => "write_file",
+            Self::Exec { .. } => "exec",
+            Self::McpCall { .. } => "mcp_call",
+            Self::BrowserNavigate { .. } => "browser_navigate",
+            Self::BrowserClick { .. } => "browser_click",
+            Self::BrowserFill { .. } => "browser_fill",
+            Self::BrowserText { .. } => "browser_text",
+            Self::BrowserScreenshot { .. } => "browser_screenshot",
+            Self::Finish { .. } => "finish",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDecision {
     pub reasoning_summary: String,
@@ -65,6 +83,7 @@ pub struct AgentOutcome {
     pub success: bool,
     pub summary: String,
     pub iterations: u32,
+    pub model_families: BTreeSet<String>,
 }
 
 pub struct AgentLoop {
@@ -74,6 +93,12 @@ pub struct AgentLoop {
     pub sandbox: Arc<dyn SandboxBackend>,
     pub tools: Arc<ToolBus>,
     pub policy: AgentPolicy,
+    pub system_prompt: String,
+    pub allowed_tools: BTreeSet<String>,
+    pub denied_tools: BTreeSet<String>,
+    pub preferred_model_families: Vec<String>,
+    pub excluded_model_families: Vec<String>,
+    pub max_latency_ms: Option<u64>,
     pub max_iterations: u32,
 }
 
@@ -85,10 +110,18 @@ impl AgentLoop {
         lease: &SandboxLease,
         context: String,
     ) -> Result<AgentOutcome> {
+        if self.system_prompt.trim().is_empty() {
+            bail!("agent system prompt cannot be empty");
+        }
+
         let mut history = vec![
             ChatMessage {
                 role: "system".into(),
-                content: system_prompt(&task.role),
+                content: format!(
+                    "{}\n\n{}",
+                    self.system_prompt,
+                    action_contract(&task.role)
+                ),
             },
             ChatMessage {
                 role: "user".into(),
@@ -103,6 +136,7 @@ impl AgentLoop {
             self.max_iterations.min(task.budget.max_model_calls).max(1);
         let mut task_spend = 0.0_f64;
         let mut tool_calls = 0_u32;
+        let mut model_families = BTreeSet::new();
 
         for iteration in 1..=model_call_limit {
             let remaining_budget = (task.budget.max_usd - task_spend).max(0.0);
@@ -111,21 +145,21 @@ impl AgentLoop {
             }
 
             let request = ModelRequest {
-                invocation_id: Uuid::new_v4(),
+                invocation_id: Uuid::now_v7(),
                 run_id: task.run_id,
                 task_id: Some(task.id),
                 messages: history.clone(),
                 requirements: ModelRequirements {
                     task_class: task.role.clone(),
-                    context_tokens: 16_000,
+                    context_tokens: 24_000,
                     requires_tools: false,
                     requires_vision: false,
                     requires_structured_output: true,
                     max_cost_usd: remaining_budget,
-                    max_latency_ms: None,
+                    max_latency_ms: self.max_latency_ms,
                     data_classification: Default::default(),
-                    preferred_model_families: vec![],
-                    excluded_model_families: vec![],
+                    preferred_model_families: self.preferred_model_families.clone(),
+                    excluded_model_families: self.excluded_model_families.clone(),
                 },
                 temperature: 0.1,
                 max_output_tokens: 3500,
@@ -135,10 +169,9 @@ impl AgentLoop {
             let model = self.router.select(
                 self.provider.catalog(),
                 &request.requirements,
-                12_000,
-                2_000,
+                16_000,
+                2_500,
             )?;
-
             let response = self.provider.invoke(model, &request).await?;
             if response.cost_usd > remaining_budget {
                 bail!(
@@ -148,6 +181,12 @@ impl AgentLoop {
                 );
             }
             task_spend += response.cost_usd;
+
+            if let Some(spec) = self.provider.catalog().iter().find(|spec| {
+                spec.provider == response.provider && spec.model == response.model
+            }) {
+                model_families.insert(spec.family.clone());
+            }
 
             self.store.record_cost(CostRecord {
                 run_id: task.run_id,
@@ -171,6 +210,7 @@ impl AgentLoop {
                 json!({
                     "model": response.model,
                     "provider": response.provider,
+                    "model_families": model_families,
                     "cost_usd": response.cost_usd,
                     "task_spend_usd": task_spend,
                     "latency_ms": response.latency_ms
@@ -180,6 +220,7 @@ impl AgentLoop {
             let decision: AgentDecision =
                 serde_json::from_str(extract_json(&response.text))
                     .context("agent returned invalid decision JSON")?;
+            self.require_manifest_tool(&decision.action)?;
 
             let observation = match &decision.action {
                 AgentAction::ReadFile { path } => {
@@ -419,6 +460,7 @@ impl AgentLoop {
                         success: *success,
                         summary: summary.clone(),
                         iterations: iteration,
+                        model_families,
                     });
                 }
             };
@@ -436,6 +478,20 @@ impl AgentLoop {
         }
 
         bail!("agent exceeded {model_call_limit} model calls")
+    }
+
+    fn require_manifest_tool(&self, action: &AgentAction) -> Result<()> {
+        let name = action.tool_name();
+        if name == "finish" {
+            return Ok(());
+        }
+        if self.denied_tools.contains(name) {
+            bail!("tool {name} denied by agent manifest");
+        }
+        if !self.allowed_tools.is_empty() && !self.allowed_tools.contains(name) {
+            bail!("tool {name} is not allowed by agent manifest");
+        }
+        Ok(())
     }
 }
 
@@ -536,10 +592,10 @@ fn extract_json(value: &str) -> &str {
     }
 }
 
-fn system_prompt(role: &str) -> String {
+fn action_contract(role: &str) -> String {
     format!(
-        r#"You are the OpenForge {role} agent operating inside a controlled engineering workspace.
-You must make one concrete, verifiable action at a time and return ONLY JSON matching:
+        r#"You are executing as the OpenForge {role} runtime inside a controlled engineering workspace.
+Return one concrete action at a time as ONLY JSON matching one of these shapes:
 {{"reasoning_summary":"brief factual rationale","action":{{"type":"read_file","path":"..."}}}}
 {{"reasoning_summary":"...","action":{{"type":"write_file","path":"...","content":"complete file contents"}}}}
 {{"reasoning_summary":"...","action":{{"type":"exec","argv":["command","arg"],"cwd":".","timeout_seconds":120}}}}
@@ -550,6 +606,6 @@ You must make one concrete, verifiable action at a time and return ONLY JSON mat
 {{"reasoning_summary":"...","action":{{"type":"browser_text","selector":"body","timeout_ms":10000}}}}
 {{"reasoning_summary":"...","action":{{"type":"browser_screenshot","full_page":true}}}}
 {{"reasoning_summary":"...","action":{{"type":"finish","success":true,"summary":"verified outcome"}}}}
-Never request secrets, never access outside the workspace, never claim a test passed unless you executed it and observed success, and do not finish while required acceptance checks are failing."#
+Never request secrets, never access outside the workspace, never claim a test passed unless it was executed and observed, and never finish while mandatory verification is known to be failing."#
     )
 }
