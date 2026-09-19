@@ -561,6 +561,203 @@ async fn handle(state: &AppState, auth: &AuthContext, request: RpcRequest) -> Re
     }
 }
 
+async fn terminal_ws(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let auth = match authorize(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                error.to_string(),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = auth.require(Permission::Execute) {
+        return (StatusCode::FORBIDDEN, error.to_string()).into_response();
+    }
+    let id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid terminal id: {error}"),
+            )
+                .into_response();
+        }
+    };
+
+    ws.on_upgrade(move |socket| handle_terminal_socket(state, id, socket))
+        .into_response()
+}
+
+async fn handle_terminal_socket(state: AppState, id: Uuid, socket: WebSocket) {
+    let mut output = match state.services.terminals.subscribe(id).await {
+        Ok(output) => output,
+        Err(error) => {
+            tracing::warn!(terminal_id=%id, error=%error, "terminal websocket subscription failed");
+            return;
+        }
+    };
+    let (mut sender, mut receiver) = socket.split();
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Err(error) = state.services.terminals.write(id, text.as_bytes()).await {
+                            let _ = sender
+                                .send(Message::Text(
+                                    json!({"type":"error","message":error.to_string()})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if let Err(error) = state.services.terminals.write(id, &bytes).await {
+                            let _ = sender
+                                .send(Message::Text(
+                                    json!({"type":"error","message":error.to_string()})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if sender.send(Message::Pong(bytes)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Err(error) => {
+                        tracing::debug!(terminal_id=%id,error=%error,"terminal websocket receive error");
+                        break;
+                    }
+                }
+            }
+            event = output.recv() => {
+                match event {
+                    Ok(event) => {
+                        let payload = match serde_json::to_string(&event) {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                tracing::warn!(terminal_id=%id,error=%error,"serialize terminal event failed");
+                                break;
+                            }
+                        };
+                        if sender.send(Message::Text(payload.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let payload = json!({
+                            "type": "lagged",
+                            "skipped": skipped
+                        }).to_string();
+                        if sender.send(Message::Text(payload.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+async fn run_events_ws(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    let auth = match authorize(&state, &headers) {
+        Ok(auth) => auth,
+        Err(error) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                error.to_string(),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = auth.require(Permission::Read) {
+        return (StatusCode::FORBIDDEN, error.to_string()).into_response();
+    }
+    let run_id = match Uuid::parse_str(&run_id) {
+        Ok(id) => id,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid run id: {error}"),
+            )
+                .into_response();
+        }
+    };
+
+    ws.on_upgrade(move |socket| handle_run_events_socket(state, run_id, socket))
+        .into_response()
+}
+
+async fn handle_run_events_socket(state: AppState, run_id: Uuid, socket: WebSocket) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut after_sequence = 0i64;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(350));
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(bytes))) => {
+                        if sender.send(Message::Pong(bytes)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+            _ = interval.tick() => {
+                match state.engine.store.list_events(run_id, after_sequence, 500) {
+                    Ok(events) => {
+                        for event in events {
+                            after_sequence = event.sequence;
+                            match serde_json::to_string(&event) {
+                                Ok(payload) => {
+                                    if sender.send(Message::Text(payload.into())).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(run_id=%run_id,error=%error,"serialize run event failed");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let payload = json!({"type":"error","message":error.to_string()}).to_string();
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvelope>> {
     let mut events = Vec::new();
     let mut after = 0i64;
