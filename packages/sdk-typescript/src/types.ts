@@ -649,8 +649,16 @@ export interface WorkspaceFile {
   bytes: number;
 }
 
+export interface GitStatusEntry {
+  index: string;
+  worktree: string;
+  path: string;
+  original_path?: string | null;
+}
+
 export interface GitStatusResult {
-  porcelain_v2: string;
+  branch?: string | null;
+  entries: GitStatusEntry[];
 }
 
 export interface GitDiffResult {
