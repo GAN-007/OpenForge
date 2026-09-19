@@ -19,9 +19,12 @@ impl BudgetGuard{
         let guard=Self::new(limits)?;
         for value in [task,run,daily]{if !value.is_finite()||value<0.0{bail!("invalid budget usage")}}
         if task>guard.limits.per_task||run>guard.limits.per_run||daily>guard.limits.daily{bail!("existing usage exceeds budget limit")}
-        guard.usage.blocking_lock().task=task;
-        guard.usage.blocking_lock().run=run;
-        guard.usage.blocking_lock().daily=daily;
+        {
+            let mut usage=guard.usage.try_lock().map_err(|_| anyhow::anyhow!("new budget guard unexpectedly locked"))?;
+            usage.task=task;
+            usage.run=run;
+            usage.daily=daily;
+        }
         Ok(guard)
     }
     pub async fn reserve(&self,estimated:f64)->Result<Reservation>{
