@@ -1,4 +1,8 @@
 use crate::{AgentLoop, OpenForgeConfig, ToolBus};
+use openforge_agents::{AgentManifest, AgentRegistry};
+use openforge_edits::{EditPrediction, EditPredictionInput, EditPredictor};
+use openforge_knowledge::KnowledgeGraph;
+use openforge_verification::{VerificationPlan, Verifier};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -47,6 +51,8 @@ pub struct Engine {
     pub store: Store,
     fabric: Arc<dyn ModelProvider>,
     provider_names: Vec<String>,
+    agent_registry: AgentRegistry,
+    edit_predictor: Arc<EditPredictor>,
 }
 
 struct TaskExecution {
@@ -151,17 +157,77 @@ impl Engine {
         let fabric_impl = Arc::new(FabricProvider::new(providers)?);
         let provider_names = fabric_impl.provider_names();
         let fabric: Arc<dyn ModelProvider> = fabric_impl;
+        let agent_registry = AgentRegistry::load_directory(&config.agent_dir)?;
+        if agent_registry.all().is_empty() {
+            bail!("no agent manifests loaded from {}", config.agent_dir);
+        }
+        let edit_predictor = Arc::new(EditPredictor::new(fabric.clone()));
 
         Ok(Self {
             config,
             store,
             fabric,
             provider_names,
+            agent_registry,
+            edit_predictor,
         })
     }
 
     pub fn providers(&self) -> &[String] {
         &self.provider_names
+    }
+
+    pub fn agents(&self) -> Vec<&AgentManifest> {
+        self.agent_registry.all()
+    }
+
+    pub async fn predict_edits(
+        &self,
+        input: EditPredictionInput,
+    ) -> Result<EditPrediction> {
+        let run = self
+            .store
+            .get_run(input.run_id)?
+            .context("run not found for edit prediction")?;
+        let spent = self.store.run_cost(input.run_id)?;
+        if spent >= run.budget.hard_limit {
+            bail!("run budget exhausted");
+        }
+        let prediction = self.edit_predictor.predict(input.clone()).await?;
+        if spent + prediction.cost_usd > run.budget.hard_limit {
+            bail!("edit prediction would exceed run budget");
+        }
+
+        self.store.record_cost(CostRecord {
+            run_id: input.run_id,
+            task_id: None,
+            agent_id: Some("edit-predictor"),
+            provider: &prediction.provider,
+            model: &prediction.model,
+            amount_usd: prediction.cost_usd,
+            input_tokens: 0,
+            output_tokens: 0,
+        })?;
+        self.store.append_event(
+            Some(input.run_id),
+            None,
+            Actor {
+                kind: "agent".into(),
+                id: "edit-predictor".into(),
+            },
+            "edit.predicted",
+            json!({
+                "file_path": input.file_path,
+                "edits": prediction.edits.len(),
+                "confidence": prediction.confidence,
+                "provider": prediction.provider,
+                "model": prediction.model,
+                "latency_ms": prediction.latency_ms,
+                "cost_usd": prediction.cost_usd,
+                "cache_hit": prediction.cache_hit
+            }),
+        )?;
+        Ok(prediction)
     }
 
     pub async fn create_run(
