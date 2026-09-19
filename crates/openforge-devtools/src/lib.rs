@@ -131,7 +131,7 @@ pub async fn introspect_database(
             vec![
                 "-json".into(),
                 connection.database.clone(),
-                "SELECT m.name AS table_name,p.name AS column_name,p.type AS data_type,p."notnull" AS not_null,p.pk AS primary_key FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type='table' ORDER BY m.name,p.cid".into(),
+                r#"SELECT m.name AS table_name,p.name AS column_name,p.type AS data_type,p."notnull" AS not_null,p.pk AS primary_key FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type='table' ORDER BY m.name,p.cid"#.into(),
             ],
         ),
         DatabaseKind::Redis => (
