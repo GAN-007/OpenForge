@@ -95,6 +95,10 @@ database_write:
 
 secrets:
   default: deny
+  allow:
+    - "secret://OPENAI_API_KEY"
+    - "secret://ANTHROPIC_API_KEY"
+    - "secret://GEMINI_API_KEY"
 
 cloud_read:
   default: ask

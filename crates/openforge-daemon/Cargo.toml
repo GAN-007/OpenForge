@@ -9,13 +9,17 @@ anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
 clap.workspace = true
+openforge-acp = { path = "../openforge-acp" }
 openforge-artifacts = { path = "../openforge-artifacts" }
+openforge-cost = { path = "../openforge-cost" }
 openforge-context = { path = "../openforge-context" }
 openforge-core = { path = "../openforge-core" }
 openforge-events = { path = "../openforge-events" }
+openforge-plugins = { path = "../openforge-plugins" }
 openforge-policy = { path = "../openforge-policy" }
 openforge-protocol = { path = "../openforge-protocol" }
 openforge-search = { path = "../openforge-search" }
+openforge-secrets = { path = "../openforge-secrets" }
 openforge-symbols = { path = "../openforge-symbols" }
 openforge-telemetry = { path = "../openforge-telemetry" }
 serde_json.workspace = true
