@@ -618,7 +618,7 @@ export function DesktopApp() {
                         : monaco.MarkerSeverity.Hint,
                 message: problem.message,
                 ...(problem.source !== undefined ? { source: problem.source } : {}),
-                ...(problem.code !== undefined ? { code: problem.code } : {}),
+                ...(problem.code !== undefined ? { code: String(problem.code) } : {}),
               })),
             );
           }
