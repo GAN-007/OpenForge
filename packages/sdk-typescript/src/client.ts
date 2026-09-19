@@ -12,6 +12,7 @@ import type {
   EditPredictionInput,
   EventEnvelope,
   EventIntegrityReport,
+  GitStatusResult,
   JobCheckpoint,
   JobLease,
   KnowledgeGraph,
@@ -303,7 +304,7 @@ export class OpenForgeClient {
   }
 
   gitStatus(repo: string) {
-    return this.rpc<{ porcelain_v2: string }>("git/status", { repo });
+    return this.rpc<GitStatusResult>("git/status", { repo });
   }
 
   gitDiff(repo: string, options: { staged?: boolean; path?: string } = {}) {
