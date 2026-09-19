@@ -537,9 +537,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 openforge_policy::Decision::Allow => {}
                 openforge_policy::Decision::Ask => {
                     anyhow::bail!(
-                        "secret {} requires approval under policy {}",
-                        secret_name,
-                        policy_path
+                        "secret {secret_name} requires approval under policy {policy_path}"
                     );
                 }
                 openforge_policy::Decision::Deny => {
