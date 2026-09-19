@@ -162,6 +162,37 @@ impl BrowserClient {
         )?)
     }
 
+    pub async fn raw_request(&mut self, method: &str, params: Value) -> Result<Value> {
+        const ALLOWED: &[&str] = &[
+            "context/new",
+            "page/new",
+            "page/list",
+            "page/switch",
+            "page/close",
+            "navigate",
+            "click",
+            "fill",
+            "press",
+            "text",
+            "html",
+            "dom/snapshot",
+            "accessibility/snapshot",
+            "screenshot",
+            "network/clear",
+            "network/entries",
+            "console/clear",
+            "console",
+            "trace/start",
+            "trace/stop",
+            "storage/state",
+            "storage/save",
+        ];
+        if !ALLOWED.contains(&method) {
+            bail!("unsupported browser worker method {method}");
+        }
+        self.request(method, params).await
+    }
+
     pub async fn close(mut self) -> Result<()> {
         let _ = self.request("close", json!({})).await;
         if self.child.id().is_some() {
