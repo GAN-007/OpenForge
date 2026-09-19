@@ -98,6 +98,7 @@ class OpenForgeClient:
         *,
         policy_path: str = "config/policies/development.yaml",
         docker: bool = False,
+        runner_backend: str | None = None,
     ) -> dict[str, Any]:
         return await self.rpc(
             "run/execute",
@@ -106,6 +107,7 @@ class OpenForgeClient:
                 "run_id": run_id,
                 "policy_path": policy_path,
                 "docker": docker,
+                "runner_backend": runner_backend,
             },
         )
 
@@ -210,6 +212,194 @@ class OpenForgeClient:
             params["argv"] = argv
         result = await self.rpc("policy/evaluate", params)
         return str(result["decision"])
+
+    async def lease_secret(
+        self,
+        secret_name: str,
+        audience: str,
+        *,
+        ttl_seconds: int = 60,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "secret/lease",
+            {
+                "secret_name": secret_name,
+                "audience": audience,
+                "ttl_seconds": ttl_seconds,
+                "policy_path": policy_path,
+            },
+        )
+
+    async def revoke_secret(self, lease_id: str) -> bool:
+        result = await self.rpc("secret/revoke", {"lease_id": lease_id})
+        return bool(result["revoked"])
+
+    async def list_secret_leases(self) -> list[dict[str, Any]]:
+        return await self.rpc("secret/list")
+
+    async def acp_spawn(
+        self,
+        program: str,
+        *,
+        args: list[str] | None = None,
+        cwd: str | None = None,
+        environment: dict[str, str] | None = None,
+        timeout_seconds: int = 120,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> str:
+        result = await self.rpc(
+            "acp/spawn",
+            {
+                "program": program,
+                "args": args or [],
+                "cwd": cwd,
+                "environment": environment or {},
+                "timeout_seconds": timeout_seconds,
+                "policy_path": policy_path,
+            },
+        )
+        return str(result["process_id"])
+
+    async def acp_request(
+        self,
+        process_id: str,
+        method: str,
+        params: Any = None,
+    ) -> Any:
+        result = await self.rpc(
+            "acp/request",
+            {"process_id": process_id, "method": method, "params": params},
+        )
+        return result["result"]
+
+    async def acp_notify(
+        self,
+        process_id: str,
+        method: str,
+        params: Any = None,
+    ) -> None:
+        await self.rpc(
+            "acp/notify",
+            {"process_id": process_id, "method": method, "params": params},
+        )
+
+    async def acp_close(self, process_id: str) -> dict[str, Any]:
+        return await self.rpc("acp/close", {"process_id": process_id})
+
+    async def acp_list(self) -> list[dict[str, Any]]:
+        return await self.rpc("acp/list")
+
+    async def mcp_list_tools(self, server_name: str) -> list[dict[str, Any]]:
+        return await self.rpc("mcp/list_tools", {"server_name": server_name})
+
+    async def mcp_call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Any,
+        *,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "mcp/call_tool",
+            {
+                "server_name": server_name,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "policy_path": policy_path,
+            },
+        )
+
+    async def mcp_list_resources(self, server_name: str) -> Any:
+        return await self.rpc("mcp/list_resources", {"server_name": server_name})
+
+    async def mcp_read_resource(self, server_name: str, uri: str) -> Any:
+        return await self.rpc(
+            "mcp/read_resource",
+            {"server_name": server_name, "uri": uri},
+        )
+
+    async def mcp_list_prompts(self, server_name: str) -> Any:
+        return await self.rpc("mcp/list_prompts", {"server_name": server_name})
+
+    async def budget_reserve(
+        self,
+        run_id: str,
+        estimated_usd: float,
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "budget/reserve",
+            {"run_id": run_id, "estimated_usd": estimated_usd},
+        )
+
+    async def budget_settle(
+        self,
+        reservation_id: str,
+        actual_usd: float,
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "budget/settle",
+            {
+                "reservation_id": reservation_id,
+                "actual_usd": actual_usd,
+            },
+        )
+
+    async def budget_snapshot(self, run_id: str) -> dict[str, Any]:
+        return await self.rpc("budget/snapshot", {"run_id": run_id})
+
+    async def artifact_stream_begin(
+        self,
+        *,
+        media_type: str = "application/octet-stream",
+        source: str = "python-sdk-stream",
+    ) -> str:
+        result = await self.rpc(
+            "artifact/stream/begin",
+            {"media_type": media_type, "source": source},
+        )
+        return str(result["upload_id"])
+
+    async def artifact_stream_chunk(self, upload_id: str, content: bytes) -> int:
+        result = await self.rpc(
+            "artifact/stream/chunk",
+            {
+                "upload_id": upload_id,
+                "base64": base64.b64encode(content).decode("ascii"),
+            },
+        )
+        return int(result["bytes_written"])
+
+    async def artifact_stream_commit(
+        self,
+        upload_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "artifact/stream/commit",
+            {"upload_id": upload_id, "metadata": metadata or {}},
+        )
+
+    async def artifact_stream_abort(self, upload_id: str) -> bool:
+        result = await self.rpc(
+            "artifact/stream/abort",
+            {"upload_id": upload_id},
+        )
+        return bool(result["aborted"])
+
+    async def list_plugins(self) -> list[dict[str, Any]]:
+        return await self.rpc("plugins/list")
+
+    async def validate_plugin_capability(
+        self,
+        plugin_id: str,
+        capability: str,
+    ) -> dict[str, Any]:
+        return await self.rpc(
+            "plugins/capability/validate",
+            {"plugin_id": plugin_id, "capability": capability},
+        )
 
     async def telemetry(self) -> dict[str, Any]:
         return await self.rpc("telemetry/snapshot")
