@@ -66,14 +66,12 @@ pub async fn run_readonly_command(
                 timed_out: false,
             })
         }
-        Err(_) => {
-            Ok(CommandOutput {
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: "command timed out".into(),
-                timed_out: true,
-            })
-        }
+        Err(_) => Ok(CommandOutput {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: "command timed out".into(),
+            timed_out: true,
+        }),
     }
 }
 
