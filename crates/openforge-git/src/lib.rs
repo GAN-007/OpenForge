@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -227,11 +227,7 @@ impl GitBroker {
             .into())
     }
 
-    pub async fn reset_hard(
-        &self,
-        workspace: &GitWorkspace,
-        target_sha: &str,
-    ) -> Result<()> {
+    pub async fn reset_hard(&self, workspace: &GitWorkspace, target_sha: &str) -> Result<()> {
         let _guard = self.lock.lock().await;
         verify_commit(&self.repo, target_sha).await?;
         run_git(&workspace.path, &["reset", "--hard", target_sha]).await?;
@@ -264,7 +260,12 @@ async fn configure_identity(workspace: &Path) -> Result<()> {
 
 async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     let output = Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .current_dir(repo)
         .status()
         .await?;

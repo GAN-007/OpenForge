@@ -29,7 +29,7 @@ The default development policy denies common secret paths, host Git metadata, pr
 
 Requirements:
 
-- Rust 1.85 or newer;
+- Rust 1.88 or newer;
 - Git;
 - one configured model provider;
 - Docker when using autonomous mode;
@@ -118,7 +118,9 @@ openforge memory forget architecture --scope project
 
 ## Protocol
 
-The public protocol version is `openforge.protocol.v1`. The daemon exposes JSON-RPC 2.0 at `POST /v1/rpc` and a health endpoint at `GET /health`. MCP and ACP are implemented as separate interoperability boundaries rather than being confused with the OpenForge canonical API.
+The public protocol version is `openforge.protocol.v2`. The daemon exposes JSON-RPC 2.0 at `POST /v1/rpc`, a health endpoint at `GET /health`, authenticated REST adapters, and resumable audit streams at `GET /v1/runs/{id}/events/stream`. See [API documentation](docs/protocols/json-rpc.md). MCP and ACP are implemented as separate interoperability boundaries rather than being confused with the OpenForge canonical API.
+
+See the [repository audit and roadmap](docs/audit/2026-09-20.md) for verified fixes, remaining gaps, the file inventory, and branch/PR analysis.
 
 ## License
 

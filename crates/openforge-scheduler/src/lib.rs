@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use openforge_protocol::{TaskNode, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,7 +31,19 @@ pub struct ScheduleWave {
 pub fn validate_dag(tasks: &[TaskNode]) -> Result<()> {
     let ids: HashSet<Uuid> = tasks.iter().map(|task| task.id).collect();
 
+    if ids.len() != tasks.len() {
+        bail!("task graph contains duplicate task IDs");
+    }
     for task in tasks {
+        if !task.budget.max_usd.is_finite() || task.budget.max_usd < 0.0 {
+            bail!("task {} has an invalid budget", task.id);
+        }
+        if tasks
+            .first()
+            .is_some_and(|first| first.run_id != task.run_id)
+        {
+            bail!("task graph contains tasks from different runs");
+        }
         if task.dependencies.contains(&task.id) {
             bail!("task {} depends on itself", task.id);
         }
@@ -46,11 +58,7 @@ pub fn validate_dag(tasks: &[TaskNode]) -> Result<()> {
                 );
             }
             if !unique.insert(*dependency) {
-                bail!(
-                    "task {} repeats dependency {}",
-                    task.id,
-                    dependency
-                );
+                bail!("task {} repeats dependency {}", task.id, dependency);
             }
         }
     }
@@ -149,8 +157,7 @@ pub fn topological_order(tasks: &[TaskNode]) -> Result<Vec<Uuid>> {
 
 pub fn critical_depths(tasks: &[TaskNode]) -> Result<HashMap<Uuid, usize>> {
     let order = topological_order(tasks)?;
-    let by_id: HashMap<Uuid, &TaskNode> =
-        tasks.iter().map(|task| (task.id, task)).collect();
+    let by_id: HashMap<Uuid, &TaskNode> = tasks.iter().map(|task| (task.id, task)).collect();
     let mut children: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
 
     for task in tasks {
@@ -189,9 +196,10 @@ pub fn runnable_tasks(tasks: &[TaskNode]) -> Result<Vec<TaskNode>> {
                 task.status,
                 TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Failed
             ) && task.attempts < task.max_attempts
-                && task.dependencies.iter().all(|dependency| {
-                    statuses.get(dependency) == Some(&TaskStatus::Completed)
-                })
+                && task
+                    .dependencies
+                    .iter()
+                    .all(|dependency| statuses.get(dependency) == Some(&TaskStatus::Completed))
         })
         .cloned()
         .collect();
@@ -209,10 +217,7 @@ pub fn runnable_tasks(tasks: &[TaskNode]) -> Result<Vec<TaskNode>> {
     Ok(runnable)
 }
 
-pub fn schedule_wave(
-    tasks: &[TaskNode],
-    config: &SchedulerConfig,
-) -> Result<ScheduleWave> {
+pub fn schedule_wave(tasks: &[TaskNode], config: &SchedulerConfig) -> Result<ScheduleWave> {
     if config.max_parallel == 0 {
         bail!("max_parallel must be greater than zero");
     }
@@ -266,11 +271,7 @@ pub fn blocked_tasks(tasks: &[TaskNode]) -> Vec<Uuid> {
                 && task.dependencies.iter().any(|dependency| {
                     matches!(
                         statuses.get(dependency),
-                        Some(
-                            TaskStatus::Failed
-                                | TaskStatus::Cancelled
-                                | TaskStatus::Blocked
-                        )
+                        Some(TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Blocked)
                     )
                 })
         })
@@ -280,8 +281,7 @@ pub fn blocked_tasks(tasks: &[TaskNode]) -> Vec<Uuid> {
 
 pub fn dependency_closure(tasks: &[TaskNode], task_id: Uuid) -> Result<Vec<Uuid>> {
     validate_dag(tasks)?;
-    let by_id: HashMap<Uuid, &TaskNode> =
-        tasks.iter().map(|task| (task.id, task)).collect();
+    let by_id: HashMap<Uuid, &TaskNode> = tasks.iter().map(|task| (task.id, task)).collect();
     if !by_id.contains_key(&task_id) {
         bail!("unknown task {task_id}");
     }
@@ -298,10 +298,7 @@ pub fn dependency_closure(tasks: &[TaskNode], task_id: Uuid) -> Result<Vec<Uuid>
     }
 
     let order = topological_order(tasks)?;
-    Ok(order
-        .into_iter()
-        .filter(|id| seen.contains(id))
-        .collect())
+    Ok(order.into_iter().filter(|id| seen.contains(id)).collect())
 }
 
 #[cfg(test)]
@@ -333,6 +330,28 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn rejects_duplicate_ids_and_invalid_budgets() {
+        let run = Uuid::new_v4();
+        let first = task(Uuid::new_v4(), run, vec![], 1.0);
+        assert!(
+            validate_dag(&[first.clone(), first])
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
+        );
+        for cost in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(validate_dag(&[task(Uuid::new_v4(), run, vec![], cost)]).is_err());
+        }
+        assert!(
+            validate_dag(&[
+                task(Uuid::new_v4(), run, vec![], 1.0),
+                task(Uuid::new_v4(), Uuid::new_v4(), vec![], 1.0),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

@@ -91,9 +91,7 @@ impl RepositoryIndex {
             }
 
             let data = fs::read(path)?;
-            if data.len() > 5 * 1024 * 1024
-                || data.iter().take(8192).any(|byte| *byte == 0)
-            {
+            if data.len() > 5 * 1024 * 1024 || data.iter().take(8192).any(|byte| *byte == 0) {
                 continue;
             }
 
@@ -132,10 +130,16 @@ impl RepositoryIndex {
     }
 
     pub fn diff(&self, newer: &RepositoryIndex) -> RepositoryDelta {
-        let old: HashMap<&str, &FileRecord> =
-            self.files.iter().map(|record| (record.path.as_str(), record)).collect();
-        let new: HashMap<&str, &FileRecord> =
-            newer.files.iter().map(|record| (record.path.as_str(), record)).collect();
+        let old: HashMap<&str, &FileRecord> = self
+            .files
+            .iter()
+            .map(|record| (record.path.as_str(), record))
+            .collect();
+        let new: HashMap<&str, &FileRecord> = newer
+            .files
+            .iter()
+            .map(|record| (record.path.as_str(), record))
+            .collect();
 
         let mut delta = RepositoryDelta::default();
 
@@ -159,7 +163,9 @@ impl RepositoryIndex {
         }
 
         delta.added.sort_by(|a, b| a.path.cmp(&b.path));
-        delta.modified.sort_by(|a, b| a.after.path.cmp(&b.after.path));
+        delta
+            .modified
+            .sort_by(|a, b| a.after.path.cmp(&b.after.path));
         delta.deleted.sort_by(|a, b| a.path.cmp(&b.path));
         delta
     }
@@ -196,12 +202,7 @@ impl RepositoryIndex {
             })
             .collect();
 
-        scored.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then_with(|| left.1.cmp(&right.1))
-        });
+        scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
         scored
             .into_iter()
             .take(limit.min(1000))
@@ -233,8 +234,7 @@ fn byte_line_count(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
-    bytes.iter().filter(|byte| **byte == b'\n').count()
-        + usize::from(bytes.last() != Some(&b'\n'))
+    bytes.iter().filter(|byte| **byte == b'\n').count() + usize::from(bytes.last() != Some(&b'\n'))
 }
 
 fn is_test_path(path: &str) -> bool {

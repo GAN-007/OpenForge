@@ -8,6 +8,7 @@
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
     "dev:web": "pnpm --filter @openforge/web-console dev",
-    "dev:desktop": "pnpm --filter @openforge/desktop dev"
+    "dev:desktop": "pnpm --filter @openforge/desktop dev",
+    "test:web": "pnpm --filter @openforge/browser-worker test:web"
   }
 }

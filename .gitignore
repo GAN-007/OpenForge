@@ -18,3 +18,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.pyc
+
+*.tsbuildinfo
+.mypy_cache/
+.ruff_cache/

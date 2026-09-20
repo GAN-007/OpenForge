@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import base64
 import itertools
-from typing import Any, Self
+import json
+import sys
+from collections.abc import AsyncIterator
+from typing import Any
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import httpx
 
@@ -58,6 +66,8 @@ class OpenForgeClient:
                 f"invalid daemon response: HTTP {response.status_code}"
             ) from exc
 
+        if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
+            raise OpenForgeError("invalid or mismatched daemon response")
         if response.is_error or payload.get("error"):
             error = payload.get("error") or {}
             raise OpenForgeError(
@@ -66,6 +76,9 @@ class OpenForgeClient:
         if "result" not in payload:
             raise OpenForgeError("daemon response has no result")
         return payload["result"]
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return await self.rpc("model/list")
 
     async def initialize(self) -> dict[str, Any]:
         return await self.rpc("initialize")
@@ -110,6 +123,35 @@ class OpenForgeClient:
                 "runner_backend": runner_backend,
             },
         )
+
+    async def list_runs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        return await self.rpc("run/list", {"limit": limit, "offset": offset})
+
+    async def stream_events(self, run_id: str, after_sequence: int = 0) -> AsyncIterator[dict[str, Any]]:
+        """Replay and follow audit events; resume with the last yielded sequence."""
+        from urllib.parse import quote
+
+        async with self._client.stream(
+            "GET", f"/v1/runs/{quote(run_id, safe='')}/events/stream",
+            params={"after_sequence": after_sequence},
+            headers={"accept": "text/event-stream"},
+            timeout=httpx.Timeout(30.0, read=None),
+        ) as response:
+            if response.is_error:
+                raise OpenForgeError(f"event stream failed: HTTP {response.status_code}")
+            event_type = ""
+            data: list[str] = []
+            async for line in response.aiter_lines():
+                if not line:
+                    if event_type == "error":
+                        raise OpenForgeError("\n".join(data))
+                    if data and event_type == "audit":
+                        yield json.loads("\n".join(data))
+                    event_type, data = "", []
+                elif line.startswith("event:"):
+                    event_type = line[6:].removeprefix(" ")
+                elif line.startswith("data:"):
+                    data.append(line[5:].removeprefix(" "))
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
         return await self.rpc("run/get", {"run_id": run_id})

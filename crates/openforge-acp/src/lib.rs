@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -9,7 +9,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 #[derive(Debug, Clone)]
@@ -129,30 +129,22 @@ impl AcpAgentClient {
 
         timeout(self.request_timeout, async {
             loop {
-                let line = self
-                    .lines
-                    .next_line()
-                    .await?
-                    .context("ACP agent exited")?;
+                let line = self.lines.next_line().await?.context("ACP agent exited")?;
                 if line.trim().is_empty() {
                     continue;
                 }
                 if line.len() > self.max_response_bytes {
-                    bail!(
-                        "ACP response exceeded {} bytes",
-                        self.max_response_bytes
-                    );
+                    bail!("ACP response exceeded {} bytes", self.max_response_bytes);
                 }
 
-                let value: Value =
-                    serde_json::from_str(&line).context("invalid ACP JSON")?;
+                let value: Value = serde_json::from_str(&line).context("invalid ACP JSON")?;
                 if value.get("id").and_then(Value::as_u64) != Some(id) {
                     continue;
                 }
 
                 if let Some(error) = value.get("error") {
-                    let parsed: AcpError = serde_json::from_value(error.clone())
-                        .unwrap_or(AcpError {
+                    let parsed: AcpError =
+                        serde_json::from_value(error.clone()).unwrap_or(AcpError {
                             code: -32000,
                             message: error.to_string(),
                             data: None,

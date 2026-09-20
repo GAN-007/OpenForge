@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -77,7 +77,10 @@ impl PluginManifest {
         let entrypoint = Path::new(&self.entrypoint);
         if entrypoint.is_absolute()
             || entrypoint.components().any(|component| {
-                matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
             })
         {
             bail!("plugin entrypoint must be repository-relative and cannot traverse directories");
@@ -158,9 +161,9 @@ impl PluginHost {
         ];
         for candidate in candidates {
             if candidate.exists() {
-                let canonical = candidate
-                    .canonicalize()
-                    .with_context(|| format!("resolve plugin entrypoint {}", candidate.display()))?;
+                let canonical = candidate.canonicalize().with_context(|| {
+                    format!("resolve plugin entrypoint {}", candidate.display())
+                })?;
                 if !canonical.starts_with(&self.repository_root) {
                     bail!(
                         "plugin {} entrypoint {} escapes repository root {}",
@@ -237,8 +240,17 @@ fn discover_manifests(
 
 fn split_capability(capability: &str) -> (&str, Option<&str>) {
     const DOMAINS: [&str; 11] = [
-        "filesystem", "network", "secrets", "database", "shell", "mcp", "acp",
-        "cloud", "deployment", "browser", "git",
+        "filesystem",
+        "network",
+        "secrets",
+        "database",
+        "shell",
+        "mcp",
+        "acp",
+        "cloud",
+        "deployment",
+        "browser",
+        "git",
     ];
     for domain in DOMAINS {
         if capability == domain {

@@ -124,22 +124,12 @@ impl AgentPolicy {
             CapabilityRequest::Network(host) => (&self.network, host.to_string()),
             CapabilityRequest::Mcp(tool) => (&self.mcp, tool.to_string()),
             CapabilityRequest::Acp(agent) => (&self.acp, agent.to_string()),
-            CapabilityRequest::DatabaseRead(target) => {
-                (&self.database_read, target.to_string())
-            }
-            CapabilityRequest::DatabaseWrite(target) => {
-                (&self.database_write, target.to_string())
-            }
+            CapabilityRequest::DatabaseRead(target) => (&self.database_read, target.to_string()),
+            CapabilityRequest::DatabaseWrite(target) => (&self.database_write, target.to_string()),
             CapabilityRequest::Secret(secret) => (&self.secrets, secret.to_string()),
-            CapabilityRequest::CloudRead(resource) => {
-                (&self.cloud_read, resource.to_string())
-            }
-            CapabilityRequest::CloudWrite(resource) => {
-                (&self.cloud_write, resource.to_string())
-            }
-            CapabilityRequest::Deployment(target) => {
-                (&self.deployment, target.to_string())
-            }
+            CapabilityRequest::CloudRead(resource) => (&self.cloud_read, resource.to_string()),
+            CapabilityRequest::CloudWrite(resource) => (&self.cloud_write, resource.to_string()),
+            CapabilityRequest::Deployment(target) => (&self.deployment, target.to_string()),
             CapabilityRequest::Browser(target) => (&self.browser, target.to_string()),
             CapabilityRequest::Git(argv) => (&self.git, shell_join(argv)),
             CapabilityRequest::Delegate(agent) => (&self.delegation, agent.to_string()),
@@ -200,10 +190,18 @@ impl AgentPolicy {
 
 impl PatternRules {
     pub fn evaluate(&self, subject: &str) -> Decision {
-        if self.deny.iter().any(|pattern| pattern_matches(pattern, subject)) {
+        if self
+            .deny
+            .iter()
+            .any(|pattern| pattern_matches(pattern, subject))
+        {
             return Decision::Deny;
         }
-        if self.ask.iter().any(|pattern| pattern_matches(pattern, subject)) {
+        if self
+            .ask
+            .iter()
+            .any(|pattern| pattern_matches(pattern, subject))
+        {
             return Decision::Ask;
         }
         if self

@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["packages/desktop/src-tauri"]
 members = [
   "crates/openforge-protocol",
   "crates/openforge-events",

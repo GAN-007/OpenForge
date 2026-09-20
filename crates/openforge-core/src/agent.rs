@@ -1,12 +1,10 @@
-use anyhow::{bail, Context, Result};
+use crate::ToolBus;
+use anyhow::{Context, Result, bail};
 use openforge_models::{ModelProvider, ModelRouter};
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
-use openforge_protocol::{
-    Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode,
-};
+use openforge_protocol::{Actor, ChatMessage, ModelRequest, ModelRequirements, TaskNode};
 use openforge_sandbox::{ExecRequest, SandboxBackend, SandboxLease};
 use openforge_store::{CostRecord, Store};
-use crate::ToolBus;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -18,8 +16,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentAction {
-    ReadFile { path: String },
-    WriteFile { path: String, content: String },
+    ReadFile {
+        path: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+    },
     Exec {
         argv: Vec<String>,
         cwd: String,
@@ -51,7 +54,10 @@ pub enum AgentAction {
     BrowserScreenshot {
         full_page: bool,
     },
-    Finish { success: bool, summary: String },
+    Finish {
+        success: bool,
+        summary: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,8 +105,7 @@ impl AgentLoop {
             },
         ];
 
-        let model_call_limit =
-            self.max_iterations.min(task.budget.max_model_calls).max(1);
+        let model_call_limit = self.max_iterations.min(task.budget.max_model_calls).max(1);
         let mut task_spend = 0.0_f64;
         let mut tool_calls = 0_u32;
 
@@ -140,15 +145,6 @@ impl AgentLoop {
             )?;
 
             let response = self.provider.invoke(model, &request).await?;
-            if response.cost_usd > remaining_budget {
-                bail!(
-                    "model call cost {:.6} exceeded remaining task budget {:.6}",
-                    response.cost_usd,
-                    remaining_budget
-                );
-            }
-            task_spend += response.cost_usd;
-
             self.store.record_cost(CostRecord {
                 run_id: task.run_id,
                 task_id: Some(task.id),
@@ -159,6 +155,15 @@ impl AgentLoop {
                 input_tokens: response.input_tokens,
                 output_tokens: response.output_tokens,
             })?;
+
+            if response.cost_usd > remaining_budget {
+                bail!(
+                    "model call cost {:.6} exceeded remaining task budget {:.6}",
+                    response.cost_usd,
+                    remaining_budget
+                );
+            }
+            task_spend += response.cost_usd;
 
             self.store.append_event(
                 Some(task.run_id),
@@ -177,33 +182,22 @@ impl AgentLoop {
                 }),
             )?;
 
-            let decision: AgentDecision =
-                serde_json::from_str(extract_json(&response.text))
-                    .context("agent returned invalid decision JSON")?;
+            let decision: AgentDecision = serde_json::from_str(extract_json(&response.text))
+                .context("agent returned invalid decision JSON")?;
 
             let observation = match &decision.action {
                 AgentAction::ReadFile { path } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::ReadPath(path)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::ReadPath(path)))?;
                     let path = safe_existing_path(workspace, path).await?;
                     let data = tokio::fs::read_to_string(&path)
                         .await
                         .with_context(|| format!("read {}", path.display()))?;
-                    format!(
-                        "READ {}\n{}",
-                        path.display(),
-                        truncate(&data, 40_000)
-                    )
+                    format!("READ {}\n{}", path.display(), truncate(&data, 40_000))
                 }
                 AgentAction::WriteFile { path, content } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::WritePath(path)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::WritePath(path)))?;
                     let path = safe_write_path(workspace, path).await?;
                     if let Some(parent) = path.parent() {
                         tokio::fs::create_dir_all(parent).await?;
@@ -222,11 +216,7 @@ impl AgentLoop {
                             "bytes": content.len()
                         }),
                     )?;
-                    format!(
-                        "WROTE {} ({} bytes)",
-                        path.display(),
-                        content.len()
-                    )
+                    format!("WROTE {} ({} bytes)", path.display(), content.len())
                 }
                 AgentAction::Exec {
                     argv,
@@ -234,10 +224,7 @@ impl AgentLoop {
                     timeout_seconds,
                 } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(
-                        self.policy
-                            .evaluate(CapabilityRequest::Process(argv)),
-                    )?;
+                    require(self.policy.evaluate(CapabilityRequest::Process(argv)))?;
                     let result = self
                         .sandbox
                         .exec(
@@ -284,10 +271,7 @@ impl AgentLoop {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
                     let subject = format!("{server}/{tool}");
                     require(self.policy.evaluate(CapabilityRequest::Mcp(&subject)))?;
-                    let result = self
-                        .tools
-                        .mcp_call(server, tool, arguments.clone())
-                        .await?;
+                    let result = self.tools.mcp_call(server, tool, arguments.clone()).await?;
                     self.store.append_event(
                         Some(task.run_id),
                         Some(task.id),
@@ -385,7 +369,10 @@ impl AgentLoop {
                 }
                 AgentAction::BrowserScreenshot { full_page } => {
                     consume_tool_budget(&mut tool_calls, task.budget.max_tool_calls)?;
-                    require(self.policy.evaluate(CapabilityRequest::Browser("screenshot")))?;
+                    require(
+                        self.policy
+                            .evaluate(CapabilityRequest::Browser("screenshot")),
+                    )?;
                     let result = self.tools.browser_screenshot(*full_page).await?;
                     let summary = result
                         .get("url")
@@ -410,9 +397,7 @@ impl AgentLoop {
                         .and_then(serde_json::Value::as_str)
                         .map(str::len)
                         .unwrap_or(0);
-                    format!(
-                        "BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}"
-                    )
+                    format!("BROWSER SCREENSHOT url={summary} base64_bytes={base64_bytes}")
                 }
                 AgentAction::Finish { success, summary } => {
                     return Ok(AgentOutcome {
