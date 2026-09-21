@@ -10,7 +10,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
-use openforge_core::{CompletionInput, Engine, ModelConfig, OpenForgeConfig, ProviderConfig, RunnerBackend};
+use openforge_core::{
+    CompletionInput, Engine, ModelConfig, OpenForgeConfig, ProviderConfig, RunnerBackend,
+};
 use openforge_cost::{BudgetGuard, BudgetLimits};
 use openforge_events::verify_event_chain;
 use openforge_plugins::PluginHost;
@@ -981,7 +983,10 @@ impl StoredModelSettings {
             .unwrap_or(32_768)
             .clamp(1_024, 4_000_000) as u32;
         let tools = params.get("tools").and_then(Value::as_bool).unwrap_or(true);
-        let vision = params.get("vision").and_then(Value::as_bool).unwrap_or(false);
+        let vision = params
+            .get("vision")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let structured_output = params
             .get("structured_output")
             .and_then(Value::as_bool)
@@ -997,13 +1002,9 @@ impl StoredModelSettings {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let headers: BTreeMap<String, String> = serde_json::from_value(
-            params
-                .get("headers")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-        )
-        .context("headers must be an object of string values")?;
+        let headers: BTreeMap<String, String> =
+            serde_json::from_value(params.get("headers").cloned().unwrap_or_else(|| json!({})))
+                .context("headers must be an object of string values")?;
         let supplied_key = params
             .get("api_key")
             .and_then(Value::as_str)
@@ -1126,10 +1127,7 @@ impl StoredModelSettings {
 }
 
 fn number_or(params: &Value, field: &str, default: f64) -> Result<f64> {
-    let value = params
-        .get(field)
-        .and_then(Value::as_f64)
-        .unwrap_or(default);
+    let value = params.get(field).and_then(Value::as_f64).unwrap_or(default);
     if !value.is_finite() || value < 0.0 {
         anyhow::bail!("{field} must be a non-negative finite number");
     }
@@ -1181,10 +1179,7 @@ fn save_model_settings(path: &Path, settings: &StoredModelSettings) -> Result<()
             fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         }
     }
-    let temporary = path.with_extension(format!(
-        "json.{}.tmp",
-        Uuid::now_v7().simple()
-    ));
+    let temporary = path.with_extension(format!("json.{}.tmp", Uuid::now_v7().simple()));
 
     #[cfg(unix)]
     let mut file = {
@@ -1218,7 +1213,6 @@ fn remove_model_settings(path: &Path) -> Result<()> {
         Err(error) => Err(error.into()),
     }
 }
-
 
 async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGuard> {
     {

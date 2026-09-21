@@ -100,7 +100,10 @@ impl Engine {
         self.current_fabric().catalog().to_vec()
     }
 
-    pub fn reconfigure_providers(&self, providers: &[crate::ProviderConfig]) -> Result<Vec<String>> {
+    pub fn reconfigure_providers(
+        &self,
+        providers: &[crate::ProviderConfig],
+    ) -> Result<Vec<String>> {
         let (fabric, provider_names) = build_model_fabric(providers)?;
         {
             let mut slot = self
@@ -1116,7 +1119,6 @@ fn provider_secret(provider: &crate::ProviderConfig, required: bool) -> Result<O
 
     Ok(None)
 }
-
 
 async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     let output = tokio::process::Command::new("git")
