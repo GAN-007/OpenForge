@@ -216,3 +216,68 @@ export interface TelemetrySnapshot {
   histograms: Record<string, HistogramSnapshot>;
   recent_events: TelemetryEvent[];
 }
+
+
+export interface ModelRuntimeSpec {
+  provider: string;
+  model: string;
+  family: string;
+  context_tokens: number;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_structured_output: boolean;
+  input_usd_per_million: number;
+  output_usd_per_million: number;
+  latency_score: number;
+  quality_score: number;
+  privacy_score: number;
+  max_data_classification: string;
+}
+
+export interface SharedModelSettings {
+  provider_name: string;
+  kind: "openai-compatible" | "anthropic" | "gemini" | "bedrock-aws-cli";
+  base_url: string;
+  model: string;
+  family: string;
+  context_tokens: number;
+  tools: boolean;
+  vision: boolean;
+  structured_output: boolean;
+  input_usd_per_million: number;
+  output_usd_per_million: number;
+  latency_score: number;
+  quality_score: number;
+  privacy_score: number;
+  region?: string | null;
+  header_names: string[];
+  api_key_configured: boolean;
+}
+
+export interface ModelSettingsState {
+  configured: boolean;
+  settings?: SharedModelSettings | null;
+  active_providers: string[];
+  models: ModelRuntimeSpec[];
+}
+
+export interface ModelSettingsInput {
+  provider_name?: string;
+  kind?: "openai-compatible" | "anthropic" | "gemini" | "bedrock-aws-cli";
+  base_url?: string;
+  model: string;
+  family?: string;
+  context_tokens?: number;
+  tools?: boolean;
+  vision?: boolean;
+  structured_output?: boolean;
+  input_usd_per_million?: number;
+  output_usd_per_million?: number;
+  latency_score?: number;
+  quality_score?: number;
+  privacy_score?: number;
+  region?: string;
+  headers?: Record<string, string>;
+  api_key?: string;
+  retain_existing_api_key?: boolean;
+}

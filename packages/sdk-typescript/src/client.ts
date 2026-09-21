@@ -3,6 +3,8 @@ import type {
   CapabilitySet,
   EventEnvelope,
   EventIntegrityReport,
+  ModelSettingsInput,
+  ModelSettingsState,
   RepositoryIndex,
   Run,
   SearchHit,
@@ -428,8 +430,22 @@ export class OpenForgeClient {
     );
   }
 
+  modelSettings() {
+    return this.rpc<ModelSettingsState>("model/settings/get");
+  }
+
+  setModelSettings(params: ModelSettingsInput) {
+    return this.rpc<ModelSettingsState>("model/settings/set", params);
+  }
+
+  clearModelSettings() {
+    return this.rpc<ModelSettingsState>("model/settings/clear");
+  }
+
   providers() {
-    return this.rpc<{ providers: string[] }>("model/providers");
+    return this.rpc<Pick<ModelSettingsState, "models"> & { providers: string[] }>(
+      "model/providers",
+    );
   }
 
   async health(): Promise<boolean> {
