@@ -7,6 +7,7 @@ import type {
   PluginCapabilityDeclaration,
   PluginManifest,
   ModelSpec,
+  GatewayStatus,
   RepositoryIndex,
   Run,
   SearchHit,
@@ -68,6 +69,14 @@ export class OpenForgeClient {
     }
     return body.result;
   }
+
+  gatewayStatus() { return this.rpc<GatewayStatus>("gateway/status"); }
+
+  connectGateway(apiKey: string) {
+    return this.rpc<GatewayStatus>("gateway/connect", { api_key: apiKey });
+  }
+
+  disconnectGateway() { return this.rpc<GatewayStatus>("gateway/disconnect"); }
 
   initialize() {
     return this.rpc<CapabilitySet>("initialize");

@@ -22,3 +22,5 @@ __pycache__/
 *.tsbuildinfo
 .mypy_cache/
 .ruff_cache/
+
+.openforge/state.db-*

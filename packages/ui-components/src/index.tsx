@@ -10,3 +10,5 @@ export function StatusPill({status}:{status:string}){
   return <span className={`of-status of-status--${status.replaceAll("_","-")}`}>{status.replaceAll("_"," ")}</span>;
 }
 export function EmptyState({children}:PropsWithChildren){return <div className="of-empty">{children}</div>;}
+
+export { GatewaySettings } from "./GatewaySettings.js";

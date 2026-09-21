@@ -16,6 +16,7 @@ openforge-mcp = { path = "../openforge-mcp" }
 openforge-cost = { path = "../openforge-cost" }
 openforge-acp = { path = "../openforge-acp" }
 openforge-context = { path = "../openforge-context" }
+openforge-models = { path = "../openforge-models" }
 openforge-core = { path = "../openforge-core" }
 openforge-events = { path = "../openforge-events" }
 openforge-policy = { path = "../openforge-policy" }

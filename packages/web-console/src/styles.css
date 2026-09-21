@@ -4,3 +4,11 @@ form { display: grid; gap: .75rem; }
 form label { display: grid; gap: .35rem; }
 select { background: #121a2b; color: #e7edf9; border: 1px solid #334155; border-radius: 8px; padding: .65rem; max-width: 100%; }
 button:disabled { opacity: .55; cursor: not-allowed; }
+
+.gateway-settings { max-width: 780px; padding: .5rem 0; }
+.gateway-settings form, .gateway-settings label { display: grid; gap: .65rem; }
+.gateway-settings input { width: 100%; box-sizing: border-box; }
+.gateway-settings dd { overflow-wrap: anywhere; }
+.gateway-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.gateway-settings p { line-height: 1.55; }
+.gateway-settings [role="alert"] { color: #ff9c9c; }

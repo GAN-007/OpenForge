@@ -1,3 +1,4 @@
+mod gateway;
 mod http_api;
 
 use anyhow::{Context, Result};
@@ -202,6 +203,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "event_stream",
                 "run_listing",
                 "rest_api",
+                "gateway_settings",
                 "budgets",
                 "memory",
                 "policies",
@@ -230,6 +232,12 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 server_version: env!("CARGO_PKG_VERSION").into(),
                 capabilities,
             })?)
+        }
+        "gateway/status" => Ok(gateway::status(&state.engine)),
+        "gateway/connect" => gateway::connect(&state.engine, &request.params).await,
+        "gateway/disconnect" => {
+            state.engine.set_provider_override(None);
+            Ok(gateway::status(&state.engine))
         }
         "run/create" => {
             let repo = required_string(&request.params, "repo")?;
