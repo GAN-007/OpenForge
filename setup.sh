@@ -69,7 +69,7 @@ install_base_packages() {
       if have apt-get; then
         log "Installing base build dependencies with apt"
         $SUDO apt-get update
-        $SUDO apt-get install -y           build-essential ca-certificates curl file git pkg-config           python3 python3-pip wget libssl-dev
+        $SUDO apt-get install -y           build-essential ca-certificates curl file git pkg-config           python3 python3-pip python3-venv wget libssl-dev
       elif have dnf; then
         log "Installing base build dependencies with dnf"
         $SUDO dnf install -y           @development-tools ca-certificates curl file git openssl-devel           pkgconf-pkg-config python3 python3-pip wget
@@ -190,11 +190,14 @@ build_openforge() {
     pnpm build
   )
 
-  log "Validating Python SDK"
+  log "Validating Python SDK in an isolated virtual environment"
   (
     cd "$ROOT"
-    python3 -m pip install --user -e "python[dev]" >/dev/null
-    python3 -m pytest python/tests
+    python3 -m venv .openforge/python-venv
+    . .openforge/python-venv/bin/activate
+    python -m pip install --upgrade pip >/dev/null
+    python -m pip install -e "python[dev]" >/dev/null
+    python -m pytest python/tests
   )
 }
 

@@ -352,8 +352,8 @@ async fn main() -> Result<()> {
         command,
     } = Cli::parse();
 
-    if let Command::Init { repo } = command {
-        return init(repo).await;
+    if let Command::Init { repo } = &command {
+        return init(repo.clone()).await;
     }
 
     if standalone {
@@ -748,7 +748,7 @@ async fn memory_daemon(daemon: &DaemonClient, command: MemoryCommand) -> Result<
 }
 
 async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
-    if matches!(command, Command::Chat { .. } | Command::Model { .. }) {
+    if matches!(&command, Command::Chat { .. } | Command::Model { .. }) {
         bail!("chat and model settings require the shared OpenForge daemon");
     }
 
@@ -900,15 +900,6 @@ fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
             .map(|status| status.success())
             .unwrap_or(false);
         if !has_head {
-            let marker = repo.join(".openforge-baseline");
-            std::fs::write(&marker, b"OpenForge baseline\n")?;
-            run_process(
-                ProcessCommand::new("git")
-                    .arg("-C")
-                    .arg(&repo)
-                    .args(["add", ".openforge-baseline"]),
-                "stage baseline marker",
-            )?;
             run_process(
                 ProcessCommand::new("git")
                     .arg("-C")
@@ -919,12 +910,12 @@ fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
                         "-c",
                         "user.email=openforge@localhost",
                         "commit",
+                        "--allow-empty",
                         "-m",
                         "chore: establish OpenForge workspace baseline",
                     ]),
                 "create empty-folder Git baseline",
             )?;
-            let _ = std::fs::remove_file(marker);
         }
     }
     Ok(repo)

@@ -115,7 +115,7 @@ export function App() {
         base_url: modelBaseUrl.trim(),
         model: modelId.trim(),
         family: modelFamily.trim() || modelId.trim(),
-        api_key: modelApiKey.trim() || undefined,
+        ...(modelApiKey.trim() ? { api_key: modelApiKey.trim() } : {}),
         retain_existing_api_key: true,
       });
       setModelSettings(state);

@@ -435,7 +435,7 @@ export class OpenForgeClient {
   }
 
   setModelSettings(params: ModelSettingsInput) {
-    return this.rpc<ModelSettingsState>("model/settings/set", params);
+    return this.rpc<ModelSettingsState>("model/settings/set", { ...params });
   }
 
   clearModelSettings() {
