@@ -1308,10 +1308,7 @@ mod tests {
 
     #[test]
     fn daemon_policy_paths_are_canonical_and_provider_shape_is_stable() {
-        let policy = std::env::temp_dir().join(format!(
-            "openforge-policy-{}.yaml",
-            Uuid::new_v4()
-        ));
+        let policy = std::env::temp_dir().join(format!("openforge-policy-{}.yaml", Uuid::new_v4()));
         std::fs::write(&policy, "autonomy: execute\n").unwrap();
         let canonical = canonical_policy(&policy).unwrap();
         assert!(Path::new(&canonical).is_absolute());
