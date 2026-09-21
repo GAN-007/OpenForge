@@ -30,7 +30,12 @@ struct Cli {
     )]
     daemon_url: String,
 
-    #[arg(long, env = "OPENFORGE_API_TOKEN", global = true, hide_env_values = true)]
+    #[arg(
+        long,
+        env = "OPENFORGE_API_TOKEN",
+        global = true,
+        hide_env_values = true
+    )]
     api_token: Option<String>,
 
     #[arg(
@@ -154,7 +159,10 @@ enum ModelCommand {
             help = "API key. Prefer omitting this flag so OpenForge prompts without shell-history exposure."
         )]
         api_key: Option<String>,
-        #[arg(long, help = "Keep the daemon's currently stored API key when reconfiguring")]
+        #[arg(
+            long,
+            help = "Keep the daemon's currently stored API key when reconfiguring"
+        )]
         retain_existing_api_key: bool,
     },
     Clear,
@@ -308,12 +316,15 @@ impl DaemonClient {
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut request = self.client.post(format!("{}/v1/rpc", self.base_url)).json(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        }));
+        let mut request = self
+            .client
+            .post(format!("{}/v1/rpc", self.base_url))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params
+            }));
         if let Some(token) = &self.api_token {
             request = request.bearer_auth(token);
         }
@@ -459,9 +470,8 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
                     "policy_path": policy,
                     "docker": docker
                 });
-                let effective_runner = runner.or_else(|| {
-                    matches!(mode, Mode::Autonomous).then_some(RunnerChoice::Docker)
-                });
+                let effective_runner = runner
+                    .or_else(|| matches!(mode, Mode::Autonomous).then_some(RunnerChoice::Docker));
                 if let Some(runner) = effective_runner {
                     params["runner"] = Value::String(runner.as_str().into());
                     params["docker"] = Value::Bool(false);
@@ -579,18 +589,14 @@ async fn chat(
             .await?;
         let run_id = result_uuid(&run, "id")?;
         let tasks = daemon
-            .rpc(
-                "run/plan",
-                json!({"repo": repo_string, "run_id": run_id}),
-            )
+            .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
             .await?;
         let task_count = tasks.as_array().map_or(0, Vec::len);
         println!("planned {task_count} task(s) · run {run_id}");
 
         let assistant_summary = if mode.executes() {
-            let effective_runner = runner.or_else(|| {
-                matches!(mode, Mode::Autonomous).then_some(RunnerChoice::Docker)
-            });
+            let effective_runner =
+                runner.or_else(|| matches!(mode, Mode::Autonomous).then_some(RunnerChoice::Docker));
             let mut params = json!({
                 "repo": repo_string,
                 "run_id": run_id,
@@ -615,7 +621,10 @@ async fn chat(
                     .unwrap_or("unknown")
             )
         } else {
-            println!("plan ready; mode {} does not execute changes", mode.as_str());
+            println!(
+                "plan ready; mode {} does not execute changes",
+                mode.as_str()
+            );
             format!("run {run_id} planned {task_count} task(s) without execution")
         };
 
@@ -726,7 +735,11 @@ async fn memory_daemon(daemon: &DaemonClient, command: MemoryCommand) -> Result<
                     .await?,
             )?;
         }
-        MemoryCommand::Search { query, scope, limit } => {
+        MemoryCommand::Search {
+            query,
+            scope,
+            limit,
+        } => {
             print_json(
                 &daemon
                     .rpc(
@@ -757,18 +770,33 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
     let engine = Engine::new(config)?;
 
     match command {
-        Command::Plan { objective, repo, budget, mode } => {
-            let run = engine.create_run(&repo, objective, mode.into(), budget).await?;
+        Command::Plan {
+            objective,
+            repo,
+            budget,
+            mode,
+        } => {
+            let run = engine
+                .create_run(&repo, objective, mode.into(), budget)
+                .await?;
             let tasks = engine.plan_run(&repo, &run).await?;
             print_json(&json!({"run": run, "tasks": tasks}))?;
         }
-        Command::Execute { run_id, repo, policy, docker, runner } => {
+        Command::Execute {
+            run_id,
+            repo,
+            policy,
+            docker,
+            runner,
+        } => {
             let policy = AgentPolicy::from_yaml(policy)?;
             if docker && runner.is_some() {
                 bail!("--docker and --runner cannot be used together");
             }
             let integration_branch = if let Some(runner) = runner {
-                engine.execute_run_with_backend(&repo, run_id, policy, runner.into()).await?
+                engine
+                    .execute_run_with_backend(&repo, run_id, policy, runner.into())
+                    .await?
             } else {
                 engine.execute_run(&repo, run_id, policy, docker).await?
             };
@@ -778,8 +806,18 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
                 "cost_usd": engine.store.run_cost(run_id)?
             }))?;
         }
-        Command::Run { objective, repo, budget, mode, policy, docker, runner } => {
-            let run = engine.create_run(&repo, objective, mode.into(), budget).await?;
+        Command::Run {
+            objective,
+            repo,
+            budget,
+            mode,
+            policy,
+            docker,
+            runner,
+        } => {
+            let run = engine
+                .create_run(&repo, objective, mode.into(), budget)
+                .await?;
             let tasks = engine.plan_run(&repo, &run).await?;
             eprintln!("planned {} tasks for run {}", tasks.len(), run.id);
             let policy = AgentPolicy::from_yaml(policy)?;
@@ -787,7 +825,9 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
                 bail!("--docker and --runner cannot be used together");
             }
             let integration_branch = if let Some(runner) = runner {
-                engine.execute_run_with_backend(&repo, run.id, policy, runner.into()).await?
+                engine
+                    .execute_run_with_backend(&repo, run.id, policy, runner.into())
+                    .await?
             } else {
                 engine.execute_run(&repo, run.id, policy, docker).await?
             };
@@ -804,14 +844,22 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
             "cost_usd": engine.store.run_cost(run_id)?
         }))?,
         Command::Events { run_id, after } => {
-            print_json(&serde_json::to_value(engine.store.list_events(run_id, after, 1000)?)?)?;
+            print_json(&serde_json::to_value(
+                engine.store.list_events(run_id, after, 1000)?,
+            )?)?;
         }
         Command::Providers => print_json(&json!({
             "providers": engine.providers(),
             "models": engine.provider_catalog()
         }))?,
         Command::Memory { command } => match command {
-            MemoryCommand::Put { scope, key, value_json, project_id, repository_id } => {
+            MemoryCommand::Put {
+                scope,
+                key,
+                value_json,
+                project_id,
+                repository_id,
+            } => {
                 let value: Value =
                     serde_json::from_str(&value_json).context("value_json must be valid JSON")?;
                 engine.store.memory_put(
@@ -823,7 +871,11 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
                 )?;
                 print_json(&json!({"stored": true, "scope": scope, "key": key}))?;
             }
-            MemoryCommand::Search { query, scope, limit } => {
+            MemoryCommand::Search {
+                query,
+                scope,
+                limit,
+            } => {
                 print_json(&serde_json::to_value(engine.store.memory_search(
                     scope.as_deref(),
                     &query,
@@ -856,16 +908,23 @@ fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
         return Ok(repo);
     }
 
-    let initialize = yes_init_git || confirm(
-        "This folder is not a Git repository. OpenForge uses Git worktrees for safe edits. Initialize local Git metadata and create a baseline commit? [y/N] ",
-    )?;
+    let initialize = yes_init_git
+        || confirm(
+            "This folder is not a Git repository. OpenForge uses Git worktrees for safe edits. Initialize local Git metadata and create a baseline commit? [y/N] ",
+        )?;
     if !initialize {
         bail!("OpenForge execution requires a Git workspace");
     }
 
-    run_process(ProcessCommand::new("git").arg("-C").arg(&repo).arg("init"), "git init")?;
     run_process(
-        ProcessCommand::new("git").arg("-C").arg(&repo).args(["add", "-A"]),
+        ProcessCommand::new("git").arg("-C").arg(&repo).arg("init"),
+        "git init",
+    )?;
+    run_process(
+        ProcessCommand::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "-A"]),
         "git add",
     )?;
 
@@ -877,18 +936,15 @@ fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
         .context("inspect Git baseline")?;
     if !staged.success() {
         run_process(
-            ProcessCommand::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args([
-                    "-c",
-                    "user.name=OpenForge",
-                    "-c",
-                    "user.email=openforge@localhost",
-                    "commit",
-                    "-m",
-                    "chore: establish OpenForge workspace baseline",
-                ]),
+            ProcessCommand::new("git").arg("-C").arg(&repo).args([
+                "-c",
+                "user.name=OpenForge",
+                "-c",
+                "user.email=openforge@localhost",
+                "commit",
+                "-m",
+                "chore: establish OpenForge workspace baseline",
+            ]),
             "create Git baseline",
         )?;
     } else {
@@ -901,19 +957,16 @@ fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
             .unwrap_or(false);
         if !has_head {
             run_process(
-                ProcessCommand::new("git")
-                    .arg("-C")
-                    .arg(&repo)
-                    .args([
-                        "-c",
-                        "user.name=OpenForge",
-                        "-c",
-                        "user.email=openforge@localhost",
-                        "commit",
-                        "--allow-empty",
-                        "-m",
-                        "chore: establish OpenForge workspace baseline",
-                    ]),
+                ProcessCommand::new("git").arg("-C").arg(&repo).args([
+                    "-c",
+                    "user.name=OpenForge",
+                    "-c",
+                    "user.email=openforge@localhost",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "chore: establish OpenForge workspace baseline",
+                ]),
                 "create empty-folder Git baseline",
             )?;
         }
@@ -944,7 +997,10 @@ fn confirm(prompt: &str) -> Result<bool> {
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn conversation_objective(history: &[(String, String)], current: &str) -> String {
@@ -1019,7 +1075,11 @@ async fn init(repo: PathBuf) -> Result<()> {
         tokio::fs::write(repo.join("openforge.yaml"), DEFAULT_CONFIG).await?;
     }
     if !repo.join("config/policies/development.yaml").exists() {
-        tokio::fs::write(repo.join("config/policies/development.yaml"), DEFAULT_POLICY).await?;
+        tokio::fs::write(
+            repo.join("config/policies/development.yaml"),
+            DEFAULT_POLICY,
+        )
+        .await?;
     }
 
     println!("initialized OpenForge configuration in {}", repo.display());
