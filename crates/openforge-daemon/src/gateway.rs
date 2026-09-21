@@ -6,20 +6,36 @@ use openforge_protocol::{
     ChatMessage, DataClassification, ModelRequest, ModelRequirements, ModelSpec,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 const BASE_URL: &str = "https://model.sevi.io/cursor";
 const MODEL: &str = "auto-select";
 
 pub(super) fn status(engine: &Engine) -> Value {
+    let credential_path = credential_path();
     json!({
         "connected": engine.has_provider_override(),
         "base_url": BASE_URL,
         "model": MODEL,
-        "credential_storage": "daemon_memory",
+        "credential_storage": "user_config_file",
+        "credential_persisted": credential_path.exists(),
         "pricing": "gateway_reported_or_unpriced"
     })
+}
+
+pub(super) fn restore(engine: &Engine) -> Result<bool> {
+    let path = credential_path();
+    let Some(key) = read_persisted_key(&path)? else {
+        return Ok(false);
+    };
+    engine.set_provider_override(Some(provider_for_key(&key, BASE_URL)?));
+    Ok(true)
 }
 
 pub(super) async fn connect(engine: &Engine, params: &Value) -> Result<Value> {
@@ -29,15 +45,25 @@ pub(super) async fn connect(engine: &Engine, params: &Value) -> Result<Value> {
         .unwrap_or("")
         .trim();
     let provider = verified_provider(key, BASE_URL).await?;
+    persist_key(&credential_path(), key)?;
     engine.set_provider_override(Some(provider));
     Ok(status(engine))
 }
 
+pub(super) fn disconnect(engine: &Engine) -> Result<Value> {
+    remove_persisted_key(&credential_path())?;
+    engine.set_provider_override(None);
+    Ok(status(engine))
+}
+
 async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
-    if key.is_empty() || key.len() > 4096 || !key.bytes().all(|byte| (33..=126).contains(&byte)) {
-        bail!("Paste the actual gateway API key, not the masked placeholder.");
-    }
-    let model = ModelSpec {
+    let provider = provider_for_key(key, base_url)?;
+    let model = provider
+        .catalog()
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Sevi provider has no configured model"))?;
+
         provider: "sevi".into(),
         model: MODEL.into(),
         family: "sevi-gateway".into(),
@@ -99,6 +125,127 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
     Ok(Arc::new(provider))
 }
 
+fn provider_for_key(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
+    validate_key(key)?;
+    let model = ModelSpec {
+        provider: "sevi".into(),
+        model: MODEL.into(),
+        family: "sevi-gateway".into(),
+        // Client routing defaults, not a promise about the model chosen by Sevi.
+        context_tokens: 32_768,
+        supports_tools: false,
+        supports_vision: false,
+        supports_structured_output: true,
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        latency_score: 0.05,
+        quality_score: 0.8,
+        privacy_score: 0.5,
+        max_data_classification: DataClassification::Internal,
+    };
+    Ok(Arc::new(OpenAiCompatibleProvider::new(
+        OpenAiCompatibleConfig {
+            provider_name: "sevi".into(),
+            base_url: base_url.into(),
+            api_key: Some(key.into()),
+            extra_headers: vec![],
+            models: vec![model],
+        },
+    )?))
+}
+
+fn validate_key(key: &str) -> Result<()> {
+    if key.is_empty()
+        || key.len() > 4096
+        || !key.bytes().all(|byte| (33..=126).contains(&byte))
+    {
+        bail!("Paste the actual gateway API key, not the masked placeholder.");
+    }
+    Ok(())
+}
+
+fn credential_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("OPENFORGE_GATEWAY_CREDENTIAL_PATH") {
+        return PathBuf::from(path);
+    }
+    if let Some(root) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(root)
+            .join("openforge")
+            .join("sevi-gateway.key");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("openforge")
+            .join("sevi-gateway.key");
+    }
+    if let Some(root) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(root)
+            .join("OpenForge")
+            .join("sevi-gateway.key");
+    }
+    PathBuf::from(".openforge/sevi-gateway.key")
+}
+
+fn read_persisted_key(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(key) => {
+            validate_key(&key)?;
+            Ok(Some(key))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn persist_key(path: &Path, key: &str) -> Result<()> {
+    validate_key(key)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+
+    let temporary = path.with_extension(format!("{}.tmp", Uuid::now_v7().simple()));
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)?
+    };
+    #[cfg(not(unix))]
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+
+    file.write_all(key.as_bytes())?;
+    file.sync_all()?;
+
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+
+    fs::rename(&temporary, path)?;
+    Ok(())
+}
+
+fn remove_persisted_key(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +306,19 @@ mod tests {
         assert_eq!(snapshot.catalog()[0].model, "auto-select");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         server.abort();
+    }
+
+    #[test]
+    fn persisted_gateway_key_round_trips_without_being_embedded_in_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sevi.key");
+        persist_key(&path, "test-persisted-key").unwrap();
+        assert_eq!(
+            read_persisted_key(&path).unwrap().as_deref(),
+            Some("test-persisted-key")
+        );
+        remove_persisted_key(&path).unwrap();
+        assert!(read_persisted_key(&path).unwrap().is_none());
     }
 
     #[tokio::test]

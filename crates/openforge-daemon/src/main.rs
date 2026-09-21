@@ -75,8 +75,13 @@ async fn main() -> Result<()> {
         .filter(|value| !value.is_empty())
         .map(Arc::<str>::from);
 
+    let engine = Arc::new(Engine::new(config)?);
+    if let Err(error) = gateway::restore(&engine) {
+        tracing::warn!(%error, "stored Sevi gateway credential could not be restored");
+    }
+
     let state = AppState {
-        engine: Arc::new(Engine::new(config)?),
+        engine,
         artifacts,
         telemetry: TelemetryRegistry::default(),
         api_token,
@@ -235,10 +240,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "gateway/status" => Ok(gateway::status(&state.engine)),
         "gateway/connect" => gateway::connect(&state.engine, &request.params).await,
-        "gateway/disconnect" => {
-            state.engine.set_provider_override(None);
-            Ok(gateway::status(&state.engine))
-        }
+        "gateway/disconnect" => gateway::disconnect(&state.engine),
         "run/create" => {
             let repo = required_string(&request.params, "repo")?;
             let objective = required_string(&request.params, "objective")?;
