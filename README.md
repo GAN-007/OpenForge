@@ -69,7 +69,7 @@ The terminal connects to the shared daemon by default. It keeps recent conversat
 
 Requirements:
 
-- Rust 1.85 or newer;
+- Rust 1.88 or newer;
 - Git;
 - one configured model provider;
 - Docker when using autonomous mode;
@@ -126,6 +126,12 @@ Build and test the Python SDK:
 python -m pip install -e "python[dev]"
 pytest python/tests
 ```
+
+## Runtime integration surface
+
+The daemon exposes the same privileged runtime services to every client through policy-gated JSON-RPC: expiring secret leases and revocation, managed ACP processes, MCP tools/resources/prompts, persistent budget reservations and settlement, streamed content-addressed artifact uploads, validated plugin discovery/capability inspection, repository-aware planning, and selectable local, Docker, or Kubernetes execution backends.
+
+The TypeScript and Python SDKs mirror these routes so IDE, web, desktop, CLI, and automation clients do not need private side channels. Kubernetes execution requires an explicitly configured PVC/workspace mapping; autonomous execution still rejects the unisolated local backend.
 
 ## Engineering flow
 
