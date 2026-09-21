@@ -1,4 +1,4 @@
-//! Sevi setup is session-only: credentials never enter config, SQLite or responses.
+//! Sevi credentials are persisted in the user's private config directory and never enter project config, SQLite, logs, or API responses.
 use anyhow::{Result, bail};
 use openforge_core::Engine;
 use openforge_models::{ModelProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider};
@@ -64,28 +64,6 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Sevi provider has no configured model"))?;
 
-        provider: "sevi".into(),
-        model: MODEL.into(),
-        family: "sevi-gateway".into(),
-        // Client routing defaults, not a promise about the model chosen by Sevi.
-        context_tokens: 32_768,
-        supports_tools: false,
-        supports_vision: false,
-        supports_structured_output: true,
-        input_usd_per_million: 0.0,
-        output_usd_per_million: 0.0,
-        latency_score: 0.05,
-        quality_score: 0.8,
-        privacy_score: 0.5,
-        max_data_classification: DataClassification::Internal,
-    };
-    let provider = OpenAiCompatibleProvider::new(OpenAiCompatibleConfig {
-        provider_name: "sevi".into(),
-        base_url: base_url.into(),
-        api_key: Some(key.into()),
-        extra_headers: vec![],
-        models: vec![model.clone()],
-    })?;
     // This user-triggered setup request contains no repository or conversation data.
     let request = ModelRequest {
         invocation_id: Uuid::new_v4(),
@@ -122,7 +100,7 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
             "Gateway responded but did not return the JSON output required for OpenForge planning."
         );
     }
-    Ok(Arc::new(provider))
+    Ok(provider)
 }
 
 fn provider_for_key(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
