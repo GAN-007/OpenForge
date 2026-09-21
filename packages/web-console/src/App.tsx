@@ -8,6 +8,7 @@ import {
   OpenForgeClient,
   type EventEnvelope,
   type EventIntegrityReport,
+  type ModelSettingsState,
   type Run,
   type SearchHit,
   type TaskNode,
@@ -35,6 +36,15 @@ export function App() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [error, setError] = useState("");
+  const [modelSettings, setModelSettings] = useState<ModelSettingsState | null>(null);
+  const [modelKind, setModelKind] = useState<
+    "openai-compatible" | "anthropic" | "gemini" | "bedrock-aws-cli"
+  >("openai-compatible");
+  const [modelProviderName, setModelProviderName] = useState("shared");
+  const [modelBaseUrl, setModelBaseUrl] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [modelFamily, setModelFamily] = useState("");
+  const [modelApiKey, setModelApiKey] = useState("");
 
   const refresh = useCallback(async () => {
     setOnline(await client.health());
@@ -73,6 +83,59 @@ export function App() {
     const id = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(id);
   }, [refresh]);
+
+  useEffect(() => {
+    void client
+      .modelSettings()
+      .then((state) => {
+        setModelSettings(state);
+        const settings = state.settings;
+        if (settings) {
+          setModelKind(settings.kind);
+          setModelProviderName(settings.provider_name);
+          setModelBaseUrl(settings.base_url);
+          setModelId(settings.model);
+          setModelFamily(settings.family);
+        }
+      })
+      .catch((failure: unknown) => {
+        setError(failure instanceof Error ? failure.message : String(failure));
+      });
+  }, [client]);
+
+  async function saveModelSettings() {
+    if (!modelId.trim()) {
+      setError("Model ID is required.");
+      return;
+    }
+    try {
+      const state = await client.setModelSettings({
+        provider_name: modelProviderName.trim() || "shared",
+        kind: modelKind,
+        base_url: modelBaseUrl.trim(),
+        model: modelId.trim(),
+        family: modelFamily.trim() || modelId.trim(),
+        api_key: modelApiKey.trim() || undefined,
+        retain_existing_api_key: true,
+      });
+      setModelSettings(state);
+      setModelApiKey("");
+      setError("");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
+
+  async function clearModelSettings() {
+    try {
+      const state = await client.clearModelSettings();
+      setModelSettings(state);
+      setModelApiKey("");
+      setError("");
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
 
   async function searchRepository() {
     if (!repo.trim() || !query.trim()) return;
@@ -137,6 +200,74 @@ export function App() {
       {error && <div className="error">{error}</div>}
 
       <div className="grid">
+        <Panel title="Shared Model Runtime" className="objective">
+          <p>
+            Configure the daemon once. Browser, desktop, IDE and terminal clients
+            use this same active provider and model.
+          </p>
+          <div className="search-row">
+            <select
+              aria-label="Provider kind"
+              value={modelKind}
+              onChange={(event) =>
+                setModelKind(
+                  event.target.value as
+                    | "openai-compatible"
+                    | "anthropic"
+                    | "gemini"
+                    | "bedrock-aws-cli",
+                )
+              }
+            >
+              <option value="openai-compatible">OpenAI-compatible gateway</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Gemini</option>
+              <option value="bedrock-aws-cli">AWS Bedrock CLI</option>
+            </select>
+            <input
+              value={modelProviderName}
+              onChange={(event) => setModelProviderName(event.target.value)}
+              placeholder="Provider name, e.g. sevi"
+            />
+            <input
+              value={modelBaseUrl}
+              onChange={(event) => setModelBaseUrl(event.target.value)}
+              placeholder="Gateway base URL, e.g. https://gateway.example/v1"
+            />
+            <input
+              value={modelId}
+              onChange={(event) => setModelId(event.target.value)}
+              placeholder="Model ID / alias"
+            />
+            <input
+              value={modelFamily}
+              onChange={(event) => setModelFamily(event.target.value)}
+              placeholder="Model family (optional)"
+            />
+            <input
+              type="password"
+              value={modelApiKey}
+              onChange={(event) => setModelApiKey(event.target.value)}
+              placeholder={
+                modelSettings?.settings?.api_key_configured
+                  ? "API key already stored · enter only to replace"
+                  : "API key / gateway token"
+              }
+            />
+            <button onClick={() => void saveModelSettings()}>Use this model</button>
+            <button onClick={() => void clearModelSettings()}>Use config default</button>
+          </div>
+          <small>
+            Active:{" "}
+            {modelSettings?.models?.length
+              ? modelSettings.models
+                  .map((model) => `${model.provider}/${model.model}`)
+                  .join(", ")
+              : "loading"}
+            {modelSettings?.settings?.api_key_configured ? " · key stored" : ""}
+          </small>
+        </Panel>
+
         <Panel title="Objective" className="objective">
           {run ? (
             <>
