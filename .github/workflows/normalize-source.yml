@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "build/**"
+      - "feat/**"
 
 permissions:
   contents: write

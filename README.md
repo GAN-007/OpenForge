@@ -91,6 +91,12 @@ pytest python/tests
 
 In the web or desktop app, open **Model connection → Sevi model gateway**, paste your key, and select **Test & connect**. The preset uses `https://model.sevi.io/cursor` and `auto-select`. The key stays in daemon memory. See [setup and usage limits](docs/providers/sevi.md).
 
+## Runtime integration surface
+
+The daemon exposes privileged runtime services through policy-gated JSON-RPC: expiring secret leases and revocation, managed ACP processes, MCP tools/resources/prompts, persistent budget reservations and settlement, streamed content-addressed artifact uploads, validated plugin discovery/capability inspection, repository-aware planning, and selectable local, Docker, or Kubernetes execution backends.
+
+The TypeScript and Python SDKs mirror these routes so IDE, web, desktop, CLI, and automation clients share the same control-plane boundary. Kubernetes execution requires explicit workspace/PVC configuration, and autonomous execution still rejects the unisolated local backend.
+
 ## Engineering flow
 
 A run is pinned to an immutable base SHA. The planner produces a validated DAG. Runnable independent tasks start from the same accepted integration SHA and execute in separate task worktrees. Successful tasks must satisfy their acceptance commands before they can produce a commit. The merge coordinator cherry-picks accepted task commits into `of/integration/<run-id>`, reruns the relevant acceptance checks against the combined state, and records every step in the event ledger.
