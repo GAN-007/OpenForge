@@ -342,8 +342,16 @@ class OpenForgeClient:
     async def acp_list(self) -> list[dict[str, Any]]:
         return await self.rpc("acp/list")
 
-    async def mcp_list_tools(self, server_name: str) -> list[dict[str, Any]]:
-        return await self.rpc("mcp/list_tools", {"server_name": server_name})
+    async def mcp_list_tools(
+        self,
+        server_name: str,
+        *,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> list[dict[str, Any]]:
+        return await self.rpc(
+            "mcp/list_tools",
+            {"server_name": server_name, "policy_path": policy_path},
+        )
 
     async def mcp_call_tool(
         self,
@@ -363,17 +371,43 @@ class OpenForgeClient:
             },
         )
 
-    async def mcp_list_resources(self, server_name: str) -> Any:
-        return await self.rpc("mcp/list_resources", {"server_name": server_name})
-
-    async def mcp_read_resource(self, server_name: str, uri: str) -> Any:
+    async def mcp_list_resources(
+        self,
+        server_name: str,
+        *,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> Any:
         return await self.rpc(
-            "mcp/read_resource",
-            {"server_name": server_name, "uri": uri},
+            "mcp/list_resources",
+            {"server_name": server_name, "policy_path": policy_path},
         )
 
-    async def mcp_list_prompts(self, server_name: str) -> Any:
-        return await self.rpc("mcp/list_prompts", {"server_name": server_name})
+    async def mcp_read_resource(
+        self,
+        server_name: str,
+        uri: str,
+        *,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> Any:
+        return await self.rpc(
+            "mcp/read_resource",
+            {
+                "server_name": server_name,
+                "uri": uri,
+                "policy_path": policy_path,
+            },
+        )
+
+    async def mcp_list_prompts(
+        self,
+        server_name: str,
+        *,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> Any:
+        return await self.rpc(
+            "mcp/list_prompts",
+            {"server_name": server_name, "policy_path": policy_path},
+        )
 
     async def budget_reserve(
         self,
