@@ -1,4 +1,5 @@
-//! Sevi setup is session-only: credentials never enter config, SQLite or responses.
+//! Sevi connection settings. Only an owner-protected user file persists credentials.
+mod credentials;
 use anyhow::{Result, bail};
 use openforge_core::Engine;
 use openforge_models::{ModelProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider};
@@ -12,31 +13,94 @@ use uuid::Uuid;
 const BASE_URL: &str = "https://model.sevi.io/cursor";
 const MODEL: &str = "auto-select";
 
-pub(super) fn status(engine: &Engine) -> Value {
-    json!({
-        "connected": engine.has_provider_override(),
-        "base_url": BASE_URL,
-        "model": MODEL,
-        "credential_storage": "daemon_memory",
-        "pricing": "gateway_reported_or_unpriced"
-    })
+pub(super) struct GatewaySettings {
+    credentials: credentials::CredentialFile,
+    saved: std::sync::atomic::AtomicBool,
+    mutation: tokio::sync::Mutex<()>,
 }
 
-pub(super) async fn connect(engine: &Engine, params: &Value) -> Result<Value> {
-    let key = params
-        .get("api_key")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    let provider = verified_provider(key, BASE_URL).await?;
-    engine.set_provider_override(Some(provider));
-    Ok(status(engine))
+impl GatewaySettings {
+    pub(super) fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            credentials: credentials::CredentialFile::new(path),
+            saved: false.into(),
+            mutation: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub(super) fn restore(&self, engine: &Engine) -> Result<bool> {
+        let Some(key) = self.credentials.read()? else {
+            return Ok(false);
+        };
+        engine.set_provider_override(Some(provider_for_key(&key, BASE_URL)?));
+        self.saved.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+
+    pub(super) fn status(&self, engine: &Engine) -> Value {
+        json!({
+            "connected": engine.has_provider_override(), "base_url": BASE_URL, "model": MODEL,
+            "credential_storage": "user_config_file",
+            "credential_persisted": self.saved.load(std::sync::atomic::Ordering::SeqCst),
+            "pricing": "gateway_reported_or_unpriced"
+        })
+    }
+
+    pub(super) async fn connect(&self, engine: &Engine, params: &Value) -> Result<Value> {
+        let key = params
+            .get("api_key")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        self.connect_at(engine, key, BASE_URL).await
+    }
+
+    async fn connect_at(&self, engine: &Engine, key: &str, base_url: &str) -> Result<Value> {
+        let _guard = self.mutation.lock().await;
+        let provider = verified_provider(key, base_url).await?;
+        // Persist before switching: a failed save must not claim a remembered connection.
+        self.credentials.save(key)?;
+        engine.set_provider_override(Some(provider));
+        self.saved.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.status(engine))
+    }
+
+    pub(super) async fn disconnect(&self, engine: &Engine) -> Result<Value> {
+        let _guard = self.mutation.lock().await;
+        self.credentials.remove()?;
+        engine.set_provider_override(None);
+        self.saved.store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.status(engine))
+    }
 }
 
-async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
-    if key.is_empty() || key.len() > 4096 || !key.bytes().all(|byte| (33..=126).contains(&byte)) {
+pub(super) fn credential_path() -> Result<std::path::PathBuf> {
+    let root = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|value| std::path::PathBuf::from(value).join(".config"))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("Set HOME or XDG_CONFIG_HOME for private gateway credential storage")
+        })?;
+    if !root.is_absolute() {
+        bail!("Gateway configuration directory must be an absolute path");
+    }
+    Ok(root.join("openforge").join("sevi-gateway.key"))
+}
+
+fn validate_key(key: &str) -> Result<()> {
+    if key.is_empty() || key.len() > 16_384 || !key.bytes().all(|byte| (33..=126).contains(&byte)) {
         bail!("Paste the actual gateway API key, not the masked placeholder.");
     }
+    Ok(())
+}
+
+fn provider_for_key(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
+    validate_key(key)?;
     let model = ModelSpec {
         provider: "sevi".into(),
         model: MODEL.into(),
@@ -60,6 +124,13 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
         extra_headers: vec![],
         models: vec![model.clone()],
     })?;
+    Ok(Arc::new(provider))
+}
+
+async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelProvider>> {
+    let provider = provider_for_key(key, base_url)?;
+    let model = provider.catalog().first().expect("Sevi model preset");
+    // Authentication does not depend on how an auto-routed model formats JSON.
     // This user-triggered setup request contains no repository or conversation data.
     let request = ModelRequest {
         invocation_id: Uuid::new_v4(),
@@ -67,14 +138,14 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
         task_id: None,
         messages: vec![ChatMessage {
             role: "user".into(),
-            content: "Connection test. Return only this JSON object: {\"ok\":true}".into(),
+            content: "Connection test. Reply briefly with OK.".into(),
         }],
         requirements: ModelRequirements {
             task_class: "gateway_setup".into(),
             context_tokens: 128,
             requires_tools: false,
             requires_vision: false,
-            requires_structured_output: true,
+            requires_structured_output: false,
             max_cost_usd: f64::MAX,
             max_latency_ms: None,
             data_classification: DataClassification::Public,
@@ -82,21 +153,21 @@ async fn verified_provider(key: &str, base_url: &str) -> Result<Arc<dyn ModelPro
             excluded_model_families: vec![],
         },
         temperature: 0.0,
-        max_output_tokens: 32,
+        max_output_tokens: 512,
         response_schema: None,
     };
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        provider.invoke(&model, &request),
+        provider.invoke(model, &request),
     )
     .await
     .map_err(|_| anyhow::anyhow!("Gateway connection timed out. Check access and try again."))??;
-    if !serde_json::from_str::<Value>(&response.text).is_ok_and(|value| value.is_object()) {
+    if response.text.trim().is_empty() {
         bail!(
-            "Gateway responded but did not return the JSON output required for OpenForge planning."
+            "Gateway accepted the request but returned no assistant text. Check the model's output budget and access."
         );
     }
-    Ok(Arc::new(provider))
+    Ok(provider)
 }
 
 #[cfg(test)]
@@ -131,7 +202,8 @@ mod tests {
         engine.set_provider_override(Some(provider));
         assert_eq!(engine.providers(), vec!["sevi"]);
         assert_eq!(engine.models()[0].model, "auto-select");
-        assert!(!status(&engine).to_string().contains("test-key"));
+        let settings = GatewaySettings::new(dir.path().join("private/sevi.key"));
+        assert!(!settings.status(&engine).to_string().contains("test-key"));
         let run_id = Uuid::new_v4();
         let run = serde_json::from_value(json!({
             "id":run_id,"project_id":Uuid::new_v4(),"objective":"test","base_sha":"abc",
@@ -186,5 +258,91 @@ mod tests {
         assert!(error.contains("401"));
         assert!(!error.contains("secret-test-key"));
         server.abort();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod persistence_tests {
+    use super::*;
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::post,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn engine(directory: &std::path::Path) -> Engine {
+        let mut config = openforge_core::OpenForgeConfig::load("../../openforge.yaml").unwrap();
+        config.state_db = directory.join("state.db").to_string_lossy().into();
+        Engine::new(config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn plain_text_connect_is_saved_restored_and_forgotten_without_retesting() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let app = Router::new().route("/cursor/chat/completions", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                assert!(body.get("response_format").is_none());
+                assert!(body["max_tokens"].as_u64().unwrap() >= 256);
+                if headers["authorization"] == "Bearer bad-key" {
+                    return (StatusCode::UNAUTHORIZED, "do not echo bad-key").into_response();
+                }
+                Json(json!({"choices":[{"message":{"content":"OK! Connection successful."},"finish_reason":"stop"}]})).into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/cursor", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private/sevi.key");
+        let first = engine(dir.path());
+        let settings = GatewaySettings::new(path.clone());
+        let status = settings
+            .connect_at(&first, "fake-secret-key", &url)
+            .await
+            .unwrap();
+        assert_eq!(status["connected"], true);
+        assert_eq!(status["credential_persisted"], true);
+        assert!(!status.to_string().contains("fake-secret-key"));
+        // A rejected replacement must preserve both current and saved credentials.
+        assert!(settings.connect_at(&first, "bad-key", &url).await.is_err());
+        assert_eq!(
+            settings.credentials.read().unwrap().as_deref(),
+            Some("fake-secret-key")
+        );
+        assert!(first.has_provider_override());
+        let restored_engine = engine(dir.path());
+        let restored = GatewaySettings::new(path.clone());
+        assert!(restored.restore(&restored_engine).unwrap());
+        assert_eq!(restored_engine.models()[0].model, "auto-select");
+        assert_eq!(calls.load(Ordering::SeqCst), 2); // Restore makes no billable probe.
+        let disconnected = restored.disconnect(&restored_engine).await.unwrap();
+        assert_eq!(disconnected["credential_persisted"], false);
+        assert!(!path.exists());
+        let next = GatewaySettings::new(path);
+        assert!(!next.restore(&engine(dir.path())).unwrap());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fenced_json_is_a_valid_connection_reply_but_empty_content_is_not() {
+        for (content, success) in [("```json\n{\"ok\":true}\n```", true), ("", false)] {
+            let app =
+                Router::new().route(
+                    "/cursor/chat/completions",
+                    post(move || async move {
+                        Json(json!({"choices":[{"message":{"content":content}}]}))
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/cursor", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            assert_eq!(verified_provider("fake-key", &url).await.is_ok(), success);
+            server.abort();
+        }
     }
 }

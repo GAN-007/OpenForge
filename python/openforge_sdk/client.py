@@ -81,7 +81,7 @@ class OpenForgeClient:
         return await self.rpc("gateway/status")
 
     async def connect_gateway(self, api_key: str) -> dict[str, Any]:
-        """Test and use Sevi for this daemon session; the key is not persisted."""
+        """Test Sevi and save the key in the daemon user's private configuration file."""
         return await self.rpc("gateway/connect", {"api_key": api_key})
 
     async def disconnect_gateway(self) -> dict[str, Any]:

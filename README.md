@@ -93,7 +93,7 @@ pytest python/tests
 
 ## Sevi gateway setup
 
-In the web or desktop app, open **Model connection → Sevi model gateway**, paste your key, and select **Test & connect**. The preset uses `https://model.sevi.io/cursor` and `auto-select`. The key stays in daemon memory. See [setup and usage limits](docs/providers/sevi.md).
+In the web or desktop app, open **Model connection → Sevi model gateway**, paste your key, and select **Test & connect**. The preset uses `https://model.sevi.io/cursor` and `auto-select`. The daemon remembers a successfully tested key in an owner-only user configuration file and restores it after restart. See [setup and usage limits](docs/providers/sevi.md).
 
 ## Runtime integration surface
 

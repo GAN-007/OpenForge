@@ -35,6 +35,9 @@ uuid.workspace = true
 serde.workspace = true
 futures-util.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

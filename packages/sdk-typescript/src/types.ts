@@ -294,6 +294,7 @@ export interface GatewayStatus {
   connected: boolean;
   base_url: string;
   model: string;
-  credential_storage: "daemon_memory";
+  credential_storage: "daemon_memory" | "user_config_file";
+  credential_persisted?: boolean;
   pricing: "gateway_reported_or_unpriced";
 }

@@ -50,10 +50,11 @@ struct CompletionResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: AssistantMessage,
+    finish_reason: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 struct AssistantMessage {
-    content: Option<String>,
+    content: Option<Value>,
 }
 #[derive(Debug, Deserialize, Default)]
 struct Usage {
@@ -124,16 +125,71 @@ impl ModelProvider for OpenAiCompatibleProvider {
         Ok(ModelResponse {
             provider: self.name().into(),
             model: model.model.clone(),
-            text: parsed
-                .choices
-                .first()
-                .and_then(|c| c.message.content.clone())
-                .unwrap_or_default(),
+            text: assistant_text(&parsed.choices)?,
             input_tokens: input,
             output_tokens: output,
             latency_ms: started.elapsed().as_millis() as u64,
             cost_usd: reported_cost.unwrap_or(cost),
             provider_request_id: parsed.id,
         })
+    }
+}
+
+fn assistant_text(choices: &[Choice]) -> Result<String> {
+    let choice = choices
+        .first()
+        .context("provider returned no assistant choice")?;
+    let text = match &choice.message.content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    part.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    if text.trim().is_empty() {
+        if choice.finish_reason.as_deref() == Some("length") {
+            anyhow::bail!(
+                "provider exhausted its output token budget before returning assistant text"
+            );
+        }
+        anyhow::bail!("provider returned no assistant text");
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatible_text_content_accepts_strings_and_text_parts() {
+        for content in [
+            json!("OK"),
+            json!([{"type":"text","text":"O"},{"type":"text","text":"K"}]),
+        ] {
+            let choices: Vec<Choice> =
+                serde_json::from_value(json!([{"message":{"content":content}}])).unwrap();
+            assert_eq!(assistant_text(&choices).unwrap(), "OK");
+        }
+    }
+
+    #[test]
+    fn empty_or_reasoning_only_responses_are_not_successful_completions() {
+        let choices: Vec<Choice> = serde_json::from_value(json!([{"message":{"content":null,"reasoning_content":"private reasoning"},"finish_reason":"length"}])).unwrap();
+        assert!(
+            assistant_text(&choices)
+                .unwrap_err()
+                .to_string()
+                .contains("token budget")
+        );
+        assert!(assistant_text(&[]).is_err());
     }
 }
