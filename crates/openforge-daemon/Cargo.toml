@@ -22,6 +22,7 @@ openforge-search = { path = "../openforge-search" }
 openforge-secrets = { path = "../openforge-secrets" }
 openforge-symbols = { path = "../openforge-symbols" }
 openforge-telemetry = { path = "../openforge-telemetry" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
