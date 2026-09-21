@@ -10,21 +10,29 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
-use openforge_core::{CompletionInput, Engine, OpenForgeConfig, RunnerBackend};
+use openforge_core::{CompletionInput, Engine, ModelConfig, OpenForgeConfig, ProviderConfig, RunnerBackend};
 use openforge_cost::{BudgetGuard, BudgetLimits};
 use openforge_events::verify_event_chain;
 use openforge_plugins::PluginHost;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
-    AutonomyLevel, CapabilitySet, EventEnvelope, PROTOCOL_VERSION, RpcError, RpcRequest,
-    RpcResponse,
+    AutonomyLevel, CapabilitySet, DataClassification, EventEnvelope, PROTOCOL_VERSION, RpcError,
+    RpcRequest, RpcResponse,
 };
 use openforge_search::SearchIndex;
 use openforge_secrets::{EnvironmentSecretBroker, SecretBroker};
 use openforge_symbols::SymbolGraph;
 use openforge_telemetry::TelemetryRegistry;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
@@ -46,6 +54,8 @@ struct AppState {
     artifacts: ArtifactStore,
     telemetry: TelemetryRegistry,
     api_token: Option<Arc<str>>,
+    model_settings_path: Arc<PathBuf>,
+    base_providers: Arc<Vec<ProviderConfig>>,
     started_at: Instant,
 }
 
@@ -58,7 +68,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = OpenForgeConfig::load(&args.config).unwrap_or_default();
+    let mut config = OpenForgeConfig::load(&args.config).unwrap_or_default();
+    let base_providers = config.providers.clone();
+    let model_settings_path = model_settings_path();
+    if let Some(settings) = load_model_settings(&model_settings_path)? {
+        config.providers = vec![settings.to_provider_config()?];
+    }
     let artifacts = ArtifactStore::open(&config.artifact_dir)?;
     let api_token = std::env::var("OPENFORGE_API_TOKEN")
         .ok()
@@ -71,6 +86,8 @@ async fn main() -> Result<()> {
         artifacts,
         telemetry: TelemetryRegistry::default(),
         api_token,
+        model_settings_path: Arc::new(model_settings_path),
+        base_providers: Arc::new(base_providers),
         started_at: Instant::now(),
     };
 
@@ -204,6 +221,8 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "artifact_stream",
                 "budget_reservations",
                 "kubernetes_runner",
+                "model_settings",
+                "interactive_terminal",
             ]
             .into_iter()
             .map(|name| (name.to_string(), true))
@@ -864,10 +883,342 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 host.validate_capability(&plugin_id, &capability)?,
             )?)
         }
-        "model/providers" => Ok(json!({"providers": state.engine.providers()})),
+        "model/settings/get" => {
+            let saved = load_model_settings(&state.model_settings_path)?;
+            Ok(json!({
+                "configured": saved.is_some(),
+                "settings": saved.as_ref().map(StoredModelSettings::public_value),
+                "active_providers": state.engine.providers(),
+                "models": state.engine.provider_catalog()
+            }))
+        }
+        "model/settings/set" => {
+            let existing = load_model_settings(&state.model_settings_path)?;
+            let settings = StoredModelSettings::from_rpc(&request.params, existing.as_ref())?;
+            let provider = settings.to_provider_config()?;
+            let active = state.engine.reconfigure_providers(&[provider])?;
+            save_model_settings(&state.model_settings_path, &settings)?;
+            Ok(json!({
+                "configured": true,
+                "settings": settings.public_value(),
+                "active_providers": active,
+                "models": state.engine.provider_catalog()
+            }))
+        }
+        "model/settings/clear" => {
+            remove_model_settings(&state.model_settings_path)?;
+            let active = state
+                .engine
+                .reconfigure_providers(state.base_providers.as_slice())?;
+            Ok(json!({
+                "configured": false,
+                "settings": Value::Null,
+                "active_providers": active,
+                "models": state.engine.provider_catalog()
+            }))
+        }
+        "model/providers" => Ok(json!({
+            "providers": state.engine.providers(),
+            "models": state.engine.provider_catalog()
+        })),
         _ => anyhow::bail!("unknown RPC method {}", request.method),
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredModelSettings {
+    provider_name: String,
+    kind: String,
+    base_url: String,
+    model: String,
+    family: String,
+    context_tokens: u32,
+    tools: bool,
+    vision: bool,
+    structured_output: bool,
+    input_usd_per_million: f64,
+    output_usd_per_million: f64,
+    latency_score: f64,
+    quality_score: f64,
+    privacy_score: f64,
+    region: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    api_key: Option<String>,
+}
+
+impl StoredModelSettings {
+    fn from_rpc(params: &Value, existing: Option<&Self>) -> Result<Self> {
+        let provider_name = params
+            .get("provider_name")
+            .and_then(Value::as_str)
+            .unwrap_or("shared")
+            .trim()
+            .to_string();
+        let kind = params
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("openai-compatible")
+            .trim()
+            .to_string();
+        let base_url = params
+            .get("base_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        let model = required_string(params, "model")?;
+        let family = params
+            .get("family")
+            .and_then(Value::as_str)
+            .unwrap_or(&model)
+            .trim()
+            .to_string();
+        let context_tokens = params
+            .get("context_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(32_768)
+            .clamp(1_024, 4_000_000) as u32;
+        let tools = params.get("tools").and_then(Value::as_bool).unwrap_or(true);
+        let vision = params.get("vision").and_then(Value::as_bool).unwrap_or(false);
+        let structured_output = params
+            .get("structured_output")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let input_usd_per_million = number_or(params, "input_usd_per_million", 0.0)?;
+        let output_usd_per_million = number_or(params, "output_usd_per_million", 0.0)?;
+        let latency_score = number_or(params, "latency_score", 0.5)?.clamp(0.0, 1.0);
+        let quality_score = number_or(params, "quality_score", 0.8)?.clamp(0.0, 1.0);
+        let privacy_score = number_or(params, "privacy_score", 0.7)?.clamp(0.0, 1.0);
+        let region = params
+            .get("region")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let headers: BTreeMap<String, String> = serde_json::from_value(
+            params
+                .get("headers")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+        .context("headers must be an object of string values")?;
+        let supplied_key = params
+            .get("api_key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let retain_existing = params
+            .get("retain_existing_api_key")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let api_key = supplied_key.or_else(|| {
+            retain_existing
+                .then(|| existing.and_then(|settings| settings.api_key.clone()))
+                .flatten()
+        });
+
+        let settings = Self {
+            provider_name,
+            kind,
+            base_url,
+            model,
+            family,
+            context_tokens,
+            tools,
+            vision,
+            structured_output,
+            input_usd_per_million,
+            output_usd_per_million,
+            latency_score,
+            quality_score,
+            privacy_score,
+            region,
+            headers,
+            api_key,
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.provider_name.is_empty() || self.model.is_empty() || self.family.is_empty() {
+            anyhow::bail!("provider_name, model, and family cannot be empty");
+        }
+        if !matches!(
+            self.kind.as_str(),
+            "openai-compatible" | "anthropic" | "gemini" | "bedrock-aws-cli"
+        ) {
+            anyhow::bail!("unsupported model provider kind {}", self.kind);
+        }
+        if self.kind == "openai-compatible" && self.base_url.is_empty() {
+            anyhow::bail!("openai-compatible provider requires base_url");
+        }
+        if matches!(self.kind.as_str(), "anthropic" | "gemini")
+            && self.api_key.as_deref().unwrap_or("").is_empty()
+        {
+            anyhow::bail!("provider {} requires an API key", self.kind);
+        }
+        for value in [
+            self.input_usd_per_million,
+            self.output_usd_per_million,
+            self.latency_score,
+            self.quality_score,
+            self.privacy_score,
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                anyhow::bail!("model settings contain an invalid numeric value");
+            }
+        }
+        Ok(())
+    }
+
+    fn to_provider_config(&self) -> Result<ProviderConfig> {
+        self.validate()?;
+        Ok(ProviderConfig {
+            name: self.provider_name.clone(),
+            kind: self.kind.clone(),
+            base_url: self.base_url.clone(),
+            api_key_env: None,
+            api_key: self.api_key.clone(),
+            region: self.region.clone(),
+            headers: self.headers.clone(),
+            models: vec![ModelConfig {
+                id: self.model.clone(),
+                family: self.family.clone(),
+                context_tokens: self.context_tokens,
+                tools: self.tools,
+                vision: self.vision,
+                structured_output: self.structured_output,
+                input_usd_per_million: self.input_usd_per_million,
+                output_usd_per_million: self.output_usd_per_million,
+                latency_score: self.latency_score,
+                quality_score: self.quality_score,
+                privacy_score: self.privacy_score,
+                max_data_classification: DataClassification::Restricted,
+            }],
+        })
+    }
+
+    fn public_value(&self) -> Value {
+        json!({
+            "provider_name": &self.provider_name,
+            "kind": &self.kind,
+            "base_url": &self.base_url,
+            "model": &self.model,
+            "family": &self.family,
+            "context_tokens": self.context_tokens,
+            "tools": self.tools,
+            "vision": self.vision,
+            "structured_output": self.structured_output,
+            "input_usd_per_million": self.input_usd_per_million,
+            "output_usd_per_million": self.output_usd_per_million,
+            "latency_score": self.latency_score,
+            "quality_score": self.quality_score,
+            "privacy_score": self.privacy_score,
+            "region": &self.region,
+            "header_names": self.headers.keys().collect::<Vec<_>>(),
+            "api_key_configured": self.api_key.as_ref().is_some_and(|value| !value.is_empty())
+        })
+    }
+}
+
+fn number_or(params: &Value, field: &str, default: f64) -> Result<f64> {
+    let value = params
+        .get(field)
+        .and_then(Value::as_f64)
+        .unwrap_or(default);
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!("{field} must be a non-negative finite number");
+    }
+    Ok(value)
+}
+
+fn model_settings_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("OPENFORGE_MODEL_SETTINGS_PATH") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(path)
+            .join("openforge")
+            .join("model-provider.json");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("openforge")
+            .join("model-provider.json");
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local)
+            .join("OpenForge")
+            .join("model-provider.json");
+    }
+    PathBuf::from(".openforge/model-provider.json")
+}
+
+fn load_model_settings(path: &Path) -> Result<Option<StoredModelSettings>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read model settings {}", path.display()))?;
+    let settings: StoredModelSettings =
+        serde_json::from_str(&raw).context("parse persisted model settings")?;
+    settings.validate()?;
+    Ok(Some(settings))
+}
+
+fn save_model_settings(path: &Path, settings: &StoredModelSettings) -> Result<()> {
+    settings.validate()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    let temporary = path.with_extension(format!(
+        "json.{}.tmp",
+        Uuid::now_v7().simple()
+    ));
+
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)?
+    };
+    #[cfg(not(unix))]
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+
+    file.write_all(&serde_json::to_vec_pretty(settings)?)?;
+    file.sync_all()?;
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    fs::rename(&temporary, path)?;
+    Ok(())
+}
+
+fn remove_model_settings(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 
 async fn budget_guard_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetGuard> {
     {
