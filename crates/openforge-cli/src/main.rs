@@ -388,6 +388,7 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
             runner,
         } => {
             let repo = canonical_repo(&repo)?;
+            let policy = canonical_policy(&policy)?;
             let selected =
                 runner
                     .map(Runner::as_str)
@@ -433,6 +434,7 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
                 .await?;
 
             if mode.executes() {
+                let policy = canonical_policy(&policy)?;
                 let selected = runner.map(Runner::as_str).unwrap_or(
                     if matches!(mode, Mode::Autonomous) || docker {
                         "docker"
@@ -475,7 +477,8 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
             )?;
         }
         Command::Providers => {
-            let providers = daemon.rpc("model/providers", json!({})).await?;
+            let provider_result = daemon.rpc("model/providers", json!({})).await?;
+            let providers = provider_array(&provider_result)?;
             let models = daemon.rpc("model/list", json!({})).await?;
             print_json(&json!({"providers": providers, "models": models}))?;
         }
@@ -610,6 +613,7 @@ async fn chat(
                     } else {
                         "local"
                     });
+            let policy = canonical_policy(&policy)?;
             let execution = daemon
                 .rpc(
                     "run/execute",
@@ -857,6 +861,22 @@ fn canonical_repo(repo: &Path) -> Result<String> {
         .with_context(|| format!("repository path {} does not exist", repo.display()))?
         .to_string_lossy()
         .into_owned())
+}
+
+fn canonical_policy(policy: &Path) -> Result<String> {
+    Ok(policy
+        .canonicalize()
+        .with_context(|| format!("policy path {} does not exist", policy.display()))?
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn provider_array(result: &Value) -> Result<Value> {
+    result
+        .get("providers")
+        .filter(|value| value.is_array())
+        .cloned()
+        .context("daemon model/providers result is missing providers array")
 }
 
 fn prepare_workspace(repo: PathBuf, yes_init_git: bool) -> Result<PathBuf> {
@@ -1284,6 +1304,23 @@ mod tests {
                 .contains("mismatched")
         );
         server.abort();
+    }
+
+    #[test]
+    fn daemon_policy_paths_are_canonical_and_provider_shape_is_stable() {
+        let policy = std::env::temp_dir().join(format!(
+            "openforge-policy-{}.yaml",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&policy, "autonomy: execute\n").unwrap();
+        let canonical = canonical_policy(&policy).unwrap();
+        assert!(Path::new(&canonical).is_absolute());
+        assert_eq!(
+            provider_array(&json!({"providers": ["local", "sevi"]})).unwrap(),
+            json!(["local", "sevi"])
+        );
+        assert!(provider_array(&json!({"providers": {"providers": []}})).is_err());
+        let _ = std::fs::remove_file(policy);
     }
 
     #[test]

@@ -117,6 +117,9 @@ if digest.hexdigest() != expected: raise SystemExit('Node archive checksum misma
 PY
     mkdir -p "$TOOLS/node"
     tar -xJf "$TOOLS/$archive" -C "$TOOLS/node" --strip-components=1
+    # Bash may have cached an older system node path before the tools directory
+    # was populated. Flush command lookup so the newly installed Node is used.
+    hash -r
   fi
   if ! command -v pnpm >/dev/null || [[ "$(pnpm --version)" != 10.15.1 ]]; then
     npm install --prefix "$TOOLS/pnpm" --global pnpm@10.15.1

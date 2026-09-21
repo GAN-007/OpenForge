@@ -59,6 +59,13 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(workspace['folders'], [{'path': str(project)}])
             self.assertEqual(list(project.iterdir()), [])
 
+    def test_setup_flushes_shell_command_cache_after_node_bootstrap(self):
+        source = (ROOT / 'setup.sh').read_text()
+        extraction = source.index('tar -xJf "$TOOLS/$archive"')
+        cache_reset = source.index('hash -r', extraction)
+        pnpm_check = source.index('if ! command -v pnpm', extraction)
+        self.assertLess(cache_reset, pnpm_check)
+
     def test_frontend_uses_same_origin_proxy_to_selected_daemon(self):
         with patch.object(launcher, 'free_port', return_value=5191), patch.object(launcher, 'spawn') as spawn:
             with patch.object(launcher, 'wait_ready'):
