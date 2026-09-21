@@ -362,7 +362,10 @@ export class OpenForgeClient {
     return this.rpc<unknown[]>("acp/list");
   }
 
-  mcpListTools(serverName: string) {
+  mcpListTools(
+    serverName: string,
+    policyPath = "config/policies/development.yaml",
+  ) {
     return this.rpc<
       Array<{
         name: string;
@@ -370,7 +373,10 @@ export class OpenForgeClient {
         inputSchema: unknown;
         annotations?: unknown;
       }>
-    >("mcp/list_tools", { server_name: serverName });
+    >("mcp/list_tools", {
+      server_name: serverName,
+      policy_path: policyPath,
+    });
   }
 
   mcpCallTool(
@@ -391,22 +397,35 @@ export class OpenForgeClient {
     });
   }
 
-  mcpListResources(serverName: string) {
+  mcpListResources(
+    serverName: string,
+    policyPath = "config/policies/development.yaml",
+  ) {
     return this.rpc<unknown>("mcp/list_resources", {
       server_name: serverName,
+      policy_path: policyPath,
     });
   }
 
-  mcpReadResource(serverName: string, uri: string) {
+  mcpReadResource(
+    serverName: string,
+    uri: string,
+    policyPath = "config/policies/development.yaml",
+  ) {
     return this.rpc<unknown>("mcp/read_resource", {
       server_name: serverName,
       uri,
+      policy_path: policyPath,
     });
   }
 
-  mcpListPrompts(serverName: string) {
+  mcpListPrompts(
+    serverName: string,
+    policyPath = "config/policies/development.yaml",
+  ) {
     return this.rpc<unknown>("mcp/list_prompts", {
       server_name: serverName,
+      policy_path: policyPath,
     });
   }
 
