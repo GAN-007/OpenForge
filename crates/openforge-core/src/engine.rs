@@ -47,8 +47,8 @@ pub struct CompletionInput {
 pub struct Engine {
     pub config: OpenForgeConfig,
     pub store: Store,
-    fabric: Arc<dyn ModelProvider>,
-    provider_names: Vec<String>,
+    fabric: std::sync::RwLock<Arc<dyn ModelProvider>>,
+    provider_names: std::sync::RwLock<Vec<String>>,
     pub tool_bus: Arc<ToolBus>,
     pub acp_clients: tokio::sync::Mutex<
         std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<AcpAgentClient>>>,
@@ -70,92 +70,7 @@ impl Engine {
     pub fn new(config: OpenForgeConfig) -> Result<Self> {
         let store = Store::open(&config.state_db)?;
         store.clear_acp_processes()?;
-        let mut providers: Vec<Arc<dyn ModelProvider>> = Vec::new();
-
-        for provider in &config.providers {
-            let models = provider
-                .models
-                .iter()
-                .map(|model| model.to_spec(&provider.name))
-                .collect::<Vec<_>>();
-
-            match provider.kind.as_str() {
-                "openai-compatible" => {
-                    if provider.base_url.trim().is_empty() {
-                        bail!("provider {} requires base_url", provider.name);
-                    }
-                    let api_key = provider
-                        .api_key_env
-                        .as_ref()
-                        .and_then(|name| std::env::var(name).ok());
-                    providers.push(Arc::new(OpenAiCompatibleProvider::new(
-                        OpenAiCompatibleConfig {
-                            provider_name: provider.name.clone(),
-                            base_url: provider.base_url.clone(),
-                            api_key,
-                            extra_headers: provider
-                                .headers
-                                .iter()
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect(),
-                            models,
-                        },
-                    )?));
-                }
-                "anthropic" => {
-                    let env = provider
-                        .api_key_env
-                        .as_ref()
-                        .context("Anthropic provider requires api_key_env")?;
-                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
-                    providers.push(Arc::new(AnthropicProvider::new(AnthropicConfig {
-                        provider_name: provider.name.clone(),
-                        base_url: if provider.base_url.is_empty() {
-                            "https://api.anthropic.com".into()
-                        } else {
-                            provider.base_url.clone()
-                        },
-                        api_key,
-                        models,
-                    })?));
-                }
-                "gemini" => {
-                    let env = provider
-                        .api_key_env
-                        .as_ref()
-                        .context("Gemini provider requires api_key_env")?;
-                    let api_key = std::env::var(env).with_context(|| format!("missing {env}"))?;
-                    providers.push(Arc::new(GeminiProvider::new(GeminiConfig {
-                        provider_name: provider.name.clone(),
-                        base_url: if provider.base_url.is_empty() {
-                            "https://generativelanguage.googleapis.com/v1beta".into()
-                        } else {
-                            provider.base_url.clone()
-                        },
-                        api_key,
-                        models,
-                    })?));
-                }
-                "bedrock-aws-cli" => {
-                    let region = provider
-                        .region
-                        .clone()
-                        .or_else(|| std::env::var("AWS_REGION").ok())
-                        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
-                        .unwrap_or_else(|| "us-east-1".into());
-                    providers.push(Arc::new(BedrockCliProvider::new(BedrockCliConfig {
-                        provider_name: provider.name.clone(),
-                        region,
-                        models,
-                    })));
-                }
-                other => bail!("unsupported provider kind {other}"),
-            }
-        }
-
-        let fabric_impl = Arc::new(FabricProvider::new(providers)?);
-        let provider_names = fabric_impl.provider_names();
-        let fabric: Arc<dyn ModelProvider> = fabric_impl;
+        let (fabric, provider_names) = build_model_fabric(&config.providers)?;
         let tool_bus = Arc::new(ToolBus::new(
             config.mcp_servers.clone(),
             config.browser.clone(),
@@ -164,8 +79,8 @@ impl Engine {
         Ok(Self {
             config,
             store,
-            fabric,
-            provider_names,
+            fabric: std::sync::RwLock::new(fabric),
+            provider_names: std::sync::RwLock::new(provider_names),
             tool_bus,
             acp_clients: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             budget_guards: tokio::sync::Mutex::new(std::collections::HashMap::new()),
@@ -174,8 +89,41 @@ impl Engine {
         })
     }
 
-    pub fn providers(&self) -> &[String] {
-        &self.provider_names
+    pub fn providers(&self) -> Vec<String> {
+        self.provider_names
+            .read()
+            .expect("provider names lock poisoned")
+            .clone()
+    }
+
+    pub fn provider_catalog(&self) -> Vec<openforge_protocol::ModelSpec> {
+        self.current_fabric().catalog().to_vec()
+    }
+
+    pub fn reconfigure_providers(&self, providers: &[crate::ProviderConfig]) -> Result<Vec<String>> {
+        let (fabric, provider_names) = build_model_fabric(providers)?;
+        {
+            let mut slot = self
+                .fabric
+                .write()
+                .map_err(|_| anyhow::anyhow!("model fabric lock poisoned"))?;
+            *slot = fabric;
+        }
+        {
+            let mut names = self
+                .provider_names
+                .write()
+                .map_err(|_| anyhow::anyhow!("provider names lock poisoned"))?;
+            *names = provider_names.clone();
+        }
+        Ok(provider_names)
+    }
+
+    fn current_fabric(&self) -> Arc<dyn ModelProvider> {
+        self.fabric
+            .read()
+            .expect("model fabric lock poisoned")
+            .clone()
     }
 
     pub async fn create_run(
@@ -282,8 +230,9 @@ impl Engine {
         };
 
         let router = ModelRouter::default();
-        let model = router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
-        let response = self.fabric.invoke(model, &request).await?;
+        let fabric = self.current_fabric();
+        let model = router.select(fabric.catalog(), &request.requirements, 20_000, 4_000)?;
+        let response = fabric.invoke(model, &request).await?;
 
         if response.cost_usd > planning_budget {
             bail!("planner exceeded its hard cost budget");
@@ -648,13 +597,14 @@ impl Engine {
         };
 
         let router = ModelRouter::default();
+        let fabric = self.current_fabric();
         let model = router.select(
-            self.fabric.catalog(),
+            fabric.catalog(),
             &request.requirements,
             6_000,
             max_output_tokens as u64,
         )?;
-        let response = self.fabric.invoke(model, &request).await?;
+        let response = fabric.invoke(model, &request).await?;
 
         if response.cost_usd > max_cost_usd {
             bail!("completion exceeded its hard cost budget");
@@ -761,7 +711,7 @@ impl Engine {
         )?);
         let agent = AgentLoop {
             store: self.store.clone(),
-            provider: self.fabric.clone(),
+            provider: self.current_fabric(),
             router: ModelRouter::default(),
             sandbox: backend.clone(),
             tools: tools.clone(),
@@ -1052,6 +1002,121 @@ fn strip_fences(value: &str) -> String {
         .trim_end()
         .to_owned()
 }
+
+fn build_model_fabric(
+    provider_configs: &[crate::ProviderConfig],
+) -> Result<(Arc<dyn ModelProvider>, Vec<String>)> {
+    let mut providers: Vec<Arc<dyn ModelProvider>> = Vec::new();
+
+    for provider in provider_configs {
+        if provider.name.trim().is_empty() {
+            bail!("provider name cannot be empty");
+        }
+        if provider.models.is_empty() {
+            bail!("provider {} has no models configured", provider.name);
+        }
+
+        let models = provider
+            .models
+            .iter()
+            .map(|model| model.to_spec(&provider.name))
+            .collect::<Vec<_>>();
+
+        match provider.kind.as_str() {
+            "openai-compatible" => {
+                if provider.base_url.trim().is_empty() {
+                    bail!("provider {} requires base_url", provider.name);
+                }
+                let api_key = provider_secret(provider, false)?;
+                providers.push(Arc::new(OpenAiCompatibleProvider::new(
+                    OpenAiCompatibleConfig {
+                        provider_name: provider.name.clone(),
+                        base_url: provider.base_url.clone(),
+                        api_key,
+                        extra_headers: provider
+                            .headers
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                        models,
+                    },
+                )?));
+            }
+            "anthropic" => {
+                let api_key = provider_secret(provider, true)?
+                    .context("Anthropic provider requires an API key")?;
+                providers.push(Arc::new(AnthropicProvider::new(AnthropicConfig {
+                    provider_name: provider.name.clone(),
+                    base_url: if provider.base_url.is_empty() {
+                        "https://api.anthropic.com".into()
+                    } else {
+                        provider.base_url.clone()
+                    },
+                    api_key,
+                    models,
+                })?));
+            }
+            "gemini" => {
+                let api_key = provider_secret(provider, true)?
+                    .context("Gemini provider requires an API key")?;
+                providers.push(Arc::new(GeminiProvider::new(GeminiConfig {
+                    provider_name: provider.name.clone(),
+                    base_url: if provider.base_url.is_empty() {
+                        "https://generativelanguage.googleapis.com/v1beta".into()
+                    } else {
+                        provider.base_url.clone()
+                    },
+                    api_key,
+                    models,
+                })?));
+            }
+            "bedrock-aws-cli" => {
+                let region = provider
+                    .region
+                    .clone()
+                    .or_else(|| std::env::var("AWS_REGION").ok())
+                    .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+                    .unwrap_or_else(|| "us-east-1".into());
+                providers.push(Arc::new(BedrockCliProvider::new(BedrockCliConfig {
+                    provider_name: provider.name.clone(),
+                    region,
+                    models,
+                })));
+            }
+            other => bail!("unsupported provider kind {other}"),
+        }
+    }
+
+    let fabric_impl = Arc::new(FabricProvider::new(providers)?);
+    let provider_names = fabric_impl.provider_names();
+    let fabric: Arc<dyn ModelProvider> = fabric_impl;
+    Ok((fabric, provider_names))
+}
+
+fn provider_secret(provider: &crate::ProviderConfig, required: bool) -> Result<Option<String>> {
+    let direct = provider
+        .api_key
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if direct.is_some() {
+        return Ok(direct);
+    }
+
+    if let Some(name) = provider.api_key_env.as_ref() {
+        match std::env::var(name) {
+            Ok(value) if !value.trim().is_empty() => return Ok(Some(value)),
+            Ok(_) if required => bail!("environment variable {name} is empty"),
+            Err(error) if required => {
+                return Err(anyhow::anyhow!("missing {name}: {error}"));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(None)
+}
+
 
 async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     let output = tokio::process::Command::new("git")

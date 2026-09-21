@@ -187,6 +187,8 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub base_url: String,
     pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub api_key: Option<String>,
     pub region: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
