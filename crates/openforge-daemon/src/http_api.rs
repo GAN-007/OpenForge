@@ -256,6 +256,9 @@ pub(crate) mod tests {
         config.artifact_dir = dir.path().join("artifacts").to_string_lossy().into();
         let artifacts = ArtifactStore::open(&config.artifact_dir).unwrap();
         let state = AppState {
+            gateway: Arc::new(gateway::GatewaySettings::new(
+                dir.path().join("private/sevi.key"),
+            )),
             engine: Arc::new(Engine::new(config).unwrap()),
             artifacts,
             telemetry: TelemetryRegistry::default(),

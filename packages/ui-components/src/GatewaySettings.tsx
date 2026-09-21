@@ -5,6 +5,7 @@ interface GatewayStatus {
   base_url: string;
   model: string;
   credential_storage: string;
+  credential_persisted?: boolean;
   pricing: string;
 }
 interface GatewayClient {
@@ -42,7 +43,7 @@ export function GatewaySettings({ client }: { client: GatewayClient }) {
       setStatus(result);
       setApiKey("");
       setVisible(false);
-      setMessage("Connected. New planning, agent and completion requests use Sevi.");
+      setMessage(result.credential_persisted ? "Connected and saved. OpenForge will restore Sevi automatically after restarting." : "Connected for this session. Restart an updated daemon to enable remembered credentials.");
     } catch (failure) {
       setMessage("");
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -56,7 +57,7 @@ export function GatewaySettings({ client }: { client: GatewayClient }) {
       setStatus(await client.disconnectGateway());
       setApiKey("");
       setVisible(false);
-      setMessage("Disconnected. New requests use your original provider configuration.");
+      setMessage("Disconnected and saved key removed. New requests use your original provider configuration.");
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally { setBusy(false); }
@@ -69,7 +70,7 @@ export function GatewaySettings({ client }: { client: GatewayClient }) {
       <dl>
         <dt>Gateway</dt><dd>https://model.sevi.io/cursor</dd>
         <dt>Model</dt><dd>auto-select</dd>
-        <dt>Status</dt><dd>{status?.connected ? "Connected for this daemon session" : "Not connected"}</dd>
+        <dt>Status</dt><dd>{status?.connected ? (status.credential_persisted ? "Connected · key remembered" : "Connected for this session") : "Not connected"}</dd>
       </dl>
       <form onSubmit={(event) => { event.preventDefault(); void connect(); }}>
         <label>
@@ -90,10 +91,11 @@ export function GatewaySettings({ client }: { client: GatewayClient }) {
         <div className="gateway-actions">
           <button type="button" aria-pressed={visible} onClick={() => setVisible(!visible)} disabled={busy}>{visible ? "Hide key" : "Show key"}</button>
           <button type="submit" disabled={busy || !apiKey.trim()}>{busy ? "Working…" : "Test & connect"}</button>
-          {status?.connected && <button type="button" disabled={busy} onClick={() => void disconnect()}>Disconnect Sevi</button>}
+          {status?.connected && <button type="button" disabled={busy} onClick={() => void disconnect()}>Disconnect & forget key</button>}
         </div>
       </form>
-      <p>The key stays in daemon memory only. Re-enter it after restarting the daemon. Disconnect affects new requests; requests already running may finish.</p>
+      <p>Your key is saved outside your projects in a private user configuration file and restored when OpenForge restarts. On Linux/macOS only your OS user can read the file; it is not encrypted at rest. The browser does not store the key. Disconnect &amp; forget key removes the saved credential; requests already running may finish.</p>
+      {status?.credential_storage === "daemon_memory" && <p role="alert">This daemon is an older version and cannot remember your key. Restart the OpenForge daemon after updating.</p>}
       <p>Testing sends one short request. Sevi controls model access, quotas and any charges. USD totals are unpriced unless the gateway reports a cost; a zero display does not guarantee free usage.</p>
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}

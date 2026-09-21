@@ -26,7 +26,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   let run = null;
   let tasks = [];
-  let gateway = { connected: false, base_url: 'https://model.sevi.io/cursor', model: 'auto-select', credential_storage: 'daemon_memory', pricing: 'gateway_reported_or_unpriced' };
+  let gateway = { connected: false, base_url: 'https://model.sevi.io/cursor', model: 'auto-select', credential_storage: 'user_config_file', credential_persisted: false, pricing: 'gateway_reported_or_unpriced' };
   const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS' };
   await page.route('http://127.0.0.1:8765/**', async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
@@ -41,9 +41,9 @@ try {
       case 'gateway/status': result = gateway; break;
       case 'gateway/connect':
         assert.equal(request.params.api_key, 'fake-gateway-key');
-        gateway = { ...gateway, connected: true };
+        gateway = { ...gateway, connected: true, credential_persisted: true };
         result = gateway; break;
-      case 'gateway/disconnect': gateway = { ...gateway, connected: false }; result = gateway; break;
+      case 'gateway/disconnect': gateway = { ...gateway, connected: false, credential_persisted: false }; result = gateway; break;
       case 'event/verify': result = { valid: true, verified_events: 1, violations: [] }; break;
       case 'telemetry/snapshot': result = { counters: {}, gauges: {}, histograms: {}, recent_events: [] }; break;
       case 'run/list': result = run ? [run] : []; break;
@@ -67,10 +67,13 @@ try {
   assert.equal(await keyInput.getAttribute('type'), 'password');
   await keyInput.fill('fake-gateway-key');
   await page.getByRole('button', { name: 'Test & connect', exact: true }).click();
-  await page.getByText('Connected for this daemon session', { exact: true }).waitFor();
+  await page.getByText('Connected · key remembered', { exact: true }).waitFor();
   assert.equal(await keyInput.inputValue(), '');
   assert.equal(await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]).includes('fake-gateway-key')), false);
-  await page.getByRole('button', { name: 'Disconnect Sevi', exact: true }).click();
+  await page.reload();
+  await page.getByText('Connected · key remembered', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Sevi API key', { exact: true }).inputValue(), '');
+  await page.getByRole('button', { name: 'Disconnect & forget key', exact: true }).click();
   await page.getByText('Not connected', { exact: true }).waitFor();
   await page.getByLabel('Repository path', { exact: true }).fill('/test/repository');
   await page.getByLabel('Objective', { exact: true }).fill('Audit smoke objective');
@@ -81,7 +84,7 @@ try {
   await page.locator('article.task').filter({ hasText: 'Check repository' }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Plan selected run', exact: true }).isDisabled(), true);
   assert.deepEqual(errors, []);
-  console.log('Web smoke passed: session-only Sevi connect/disconnect, create run, select run, audit stream, plan tasks; no browser exceptions.');
+  console.log('Web smoke passed: remembered Sevi connect/disconnect, create run, select run, audit stream, plan tasks; no browser exceptions.');
 } finally {
   await browser?.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

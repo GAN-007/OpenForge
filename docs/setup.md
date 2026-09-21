@@ -26,7 +26,7 @@ Automatic system package installation supports Debian/Ubuntu with `apt-get`; it 
 
 All launcher interfaces use the same daemon. The launcher checks for an existing OpenForge protocol endpoint on ports 8875 and 8765, preferring its saved endpoint, before starting one. An unrelated service is never stopped. Web frontends use an available loopback port from 5180 and a same-origin Vite proxy, so occupied ports do not require changing your daemon's CORS configuration.
 
-Enter your Sevi key in **Model connection → Sevi model gateway → Test & connect**, or enter `/connect` in the terminal. CLI planning, execution and completion then use the same gateway as the GUI. The alias `auto-select` can select different underlying models per request. Keys remain in daemon memory, not launcher state; restarting the daemon requires reconnecting. Sevi controls access, quotas and charges.
+Enter your Sevi key in **Model connection → Sevi model gateway → Test & connect**, or enter `/connect` in the terminal. CLI planning, execution and completion then use the same gateway as the GUI. The alias `auto-select` can select different underlying models per request. Successfully tested keys are saved by the daemon in its private per-user configuration file and restored on restart; they never enter launcher state. Use **Disconnect & forget key** to remove the saved credential. See [credential storage details](providers/sevi.md). Sevi controls access, quotas and charges.
 
 `OPENFORGE_API_TOKEN` is the separate daemon authentication token. The CLI reads it from the environment; authenticated browser/desktop clients require it in their daemon-token field, and the IDE uses **OpenForge: Set API Token**. The launcher does not copy either credential into workspace files.
 
@@ -61,6 +61,6 @@ GUI mode installs the Linux WebKitGTK 4.1 and Tauri development dependencies, st
 
 ## Services and limits
 
-Daemon and frontend processes continue running when setup returns, so switching interfaces preserves the session. Their PIDs are printed and logs are in `.openforge/runtime/{daemon,web,desktop-web}.log`. Repeated frontend launches currently create another local frontend process; the daemon is reused. Stop only the printed PIDs you started when finished. A rebuilt binary does not update an already-running daemon: restart it deliberately when ready to re-enter your gateway key.
+Daemon and frontend processes continue running when setup returns, so switching interfaces preserves the session. Their PIDs are printed and logs are in `.openforge/runtime/{daemon,web,desktop-web}.log`. Repeated frontend launches currently create another local frontend process; the daemon is reused. Stop only the printed PIDs you started when finished. A rebuilt binary does not update an already-running daemon: restart it deliberately to load an updated backend. Keys saved by the updated gateway are restored automatically.
 
 The script installs the dependencies needed for local interfaces. Docker, Kubernetes credentials/PVCs, remote model access, JetBrains/Java, and optional evaluation environments are separate services/toolchains, not silently provisioned. It does not grant policy approvals or change deployment settings. Native GUI/IDE opening requires an available desktop session; remote/headless users should use terminal or `--no-open` browser mode.
