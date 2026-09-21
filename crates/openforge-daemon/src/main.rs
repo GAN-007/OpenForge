@@ -700,6 +700,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         )?),
         "mcp/list_tools" => {
             let server_name = required_string(&request.params, "server_name")?;
+            enforce_mcp_policy(
+                &request.params,
+                &format!("{server_name}/tools/list"),
+                "MCP tool discovery",
+            )?;
             let mut client = initialized_mcp_client(state, &server_name).await?;
             let result = client.list_tools().await;
             let cleanup = client.shutdown().await;
@@ -715,21 +720,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let policy_path = request
-                .params
-                .get("policy_path")
-                .and_then(Value::as_str)
-                .unwrap_or("config/policies/development.yaml");
-            let policy = AgentPolicy::from_yaml(policy_path)?;
-            match policy.evaluate(CapabilityRequest::Mcp(&tool_name)) {
-                openforge_policy::Decision::Allow => {}
-                openforge_policy::Decision::Ask => {
-                    anyhow::bail!("MCP tool {tool_name} requires approval");
-                }
-                openforge_policy::Decision::Deny => {
-                    anyhow::bail!("MCP tool {tool_name} is denied by policy");
-                }
-            }
+            enforce_mcp_policy(
+                &request.params,
+                &tool_name,
+                &format!("MCP tool {tool_name}"),
+            )?;
             state
                 .engine
                 .tool_bus
@@ -738,6 +733,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "mcp/list_resources" => {
             let server_name = required_string(&request.params, "server_name")?;
+            enforce_mcp_policy(
+                &request.params,
+                &format!("{server_name}/resources/list"),
+                "MCP resource discovery",
+            )?;
             let mut client = initialized_mcp_client(state, &server_name).await?;
             let result = client.list_resources().await;
             let cleanup = client.shutdown().await;
@@ -748,6 +748,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         "mcp/read_resource" => {
             let server_name = required_string(&request.params, "server_name")?;
             let uri = required_string(&request.params, "uri")?;
+            enforce_mcp_policy(
+                &request.params,
+                &format!("{server_name}/resources/read/{uri}"),
+                &format!("MCP resource {uri}"),
+            )?;
             let mut client = initialized_mcp_client(state, &server_name).await?;
             let result = client.read_resource(&uri).await;
             let cleanup = client.shutdown().await;
@@ -757,6 +762,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         }
         "mcp/list_prompts" => {
             let server_name = required_string(&request.params, "server_name")?;
+            enforce_mcp_policy(
+                &request.params,
+                &format!("{server_name}/prompts/list"),
+                "MCP prompt discovery",
+            )?;
             let mut client = initialized_mcp_client(state, &server_name).await?;
             let result = client.list_prompts().await;
             let cleanup = client.shutdown().await;
@@ -894,6 +904,23 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         "model/list" => Ok(serde_json::to_value(state.engine.models())?),
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
         _ => anyhow::bail!("unknown RPC method {}", request.method),
+    }
+}
+
+fn enforce_mcp_policy(params: &Value, subject: &str, operation: &str) -> Result<()> {
+    let policy_path = params
+        .get("policy_path")
+        .and_then(Value::as_str)
+        .unwrap_or("config/policies/development.yaml");
+    let policy = AgentPolicy::from_yaml(policy_path)?;
+    match policy.evaluate(CapabilityRequest::Mcp(subject)) {
+        openforge_policy::Decision::Allow => Ok(()),
+        openforge_policy::Decision::Ask => {
+            anyhow::bail!("{operation} requires approval under policy {policy_path}")
+        }
+        openforge_policy::Decision::Deny => {
+            anyhow::bail!("{operation} is denied by policy {policy_path}")
+        }
     }
 }
 
