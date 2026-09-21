@@ -240,7 +240,7 @@ async fn stream_events(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::{
         body::{Body, to_bytes},
@@ -249,7 +249,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn fixture() -> (tempfile::TempDir, AppState, Uuid) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, AppState, Uuid) {
         let dir = tempfile::tempdir().unwrap();
         let mut config = OpenForgeConfig::load("../../openforge.yaml").unwrap();
         config.state_db = dir.path().join("state.db").to_string_lossy().into();

@@ -24,3 +24,6 @@ __pycache__/
 .ruff_cache/
 
 .openforge/state.db-*
+
+.openforge/tools/
+.openforge/runtime/

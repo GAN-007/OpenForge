@@ -30,7 +30,12 @@ struct Cli {
     )]
     daemon_url: String,
 
-    #[arg(long, env = "OPENFORGE_API_TOKEN", global = true, hide_env_values = true)]
+    #[arg(
+        long,
+        env = "OPENFORGE_API_TOKEN",
+        global = true,
+        hide_env_values = true
+    )]
     api_token: Option<String>,
 
     #[arg(
@@ -264,19 +269,26 @@ impl DaemonClient {
         let status = response.status();
         let body = response.text().await?;
         if !status.is_success() {
-            bail!("daemon health check returned {status}: {body}");
+            bail!("daemon health check returned {status}");
         }
-        serde_json::from_str(&body).context("parse daemon health response")
+        let value: Value = serde_json::from_str(&body).context("parse daemon health response")?;
+        if value["protocol"] != "openforge.protocol.v2" || value["status"] != "ok" {
+            bail!("endpoint is not a compatible OpenForge daemon");
+        }
+        Ok(value)
     }
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut request = self.client.post(format!("{}/v1/rpc", self.base_url)).json(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        }));
+        let mut request = self
+            .client
+            .post(format!("{}/v1/rpc", self.base_url))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params
+            }));
         if let Some(token) = &self.api_token {
             request = request.bearer_auth(token);
         }
@@ -290,11 +302,14 @@ impl DaemonClient {
         let payload: Value = serde_json::from_str(&body)
             .with_context(|| format!("daemon returned invalid JSON for {method}"))?;
 
+        if payload["jsonrpc"] != "2.0" || payload["id"] != id {
+            bail!("daemon returned a mismatched JSON-RPC response");
+        }
         if !status.is_success() || payload.get("error").is_some_and(|value| !value.is_null()) {
             let message = payload
                 .pointer("/error/message")
                 .and_then(Value::as_str)
-                .unwrap_or(&body);
+                .unwrap_or("daemon request failed");
             bail!("{method}: {message}");
         }
 
@@ -373,9 +388,10 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
             runner,
         } => {
             let repo = canonical_repo(&repo)?;
-            let selected = runner
-                .map(Runner::as_str)
-                .unwrap_or(if docker { "docker" } else { "local" });
+            let selected =
+                runner
+                    .map(Runner::as_str)
+                    .unwrap_or(if docker { "docker" } else { "local" });
             print_json(
                 &daemon
                     .rpc(
@@ -417,13 +433,13 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
                 .await?;
 
             if mode.executes() {
-                let selected = runner.map(Runner::as_str).unwrap_or(if matches!(mode, Mode::Autonomous) {
-                    "docker"
-                } else if docker {
-                    "docker"
-                } else {
-                    "local"
-                });
+                let selected = runner.map(Runner::as_str).unwrap_or(
+                    if matches!(mode, Mode::Autonomous) || docker {
+                        "docker"
+                    } else {
+                        "local"
+                    },
+                );
                 let execution = daemon
                     .rpc(
                         "run/execute",
@@ -528,10 +544,20 @@ async fn chat(
             "/help" => {
                 println!("/help        show terminal commands");
                 println!("/gateway     show the shared Sevi gateway status");
+                println!("/connect     enter your Sevi key without echoing it");
+                println!("/disconnect  disconnect the shared Sevi provider");
                 println!("/provider    show the daemon model catalog");
                 println!("/context     show recent terminal conversation context");
                 println!("/clear       clear terminal conversation context");
                 println!("/exit        leave OpenForge");
+                continue;
+            }
+            "/connect" => {
+                gateway_command(daemon, GatewayCommand::Connect { api_key: None }).await?;
+                continue;
+            }
+            "/disconnect" => {
+                gateway_command(daemon, GatewayCommand::Disconnect).await?;
                 continue;
             }
             "/gateway" => {
@@ -570,20 +596,20 @@ async fn chat(
             .await?;
         let run_id = result_uuid(&run, "id")?;
         let tasks = daemon
-            .rpc(
-                "run/plan",
-                json!({"repo": repo_string, "run_id": run_id}),
-            )
+            .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
             .await?;
         let task_count = tasks.as_array().map_or(0, Vec::len);
         println!("planned {task_count} task(s) · run {run_id}");
 
         let summary = if mode.executes() {
-            let selected = runner.map(Runner::as_str).unwrap_or(if matches!(mode, Mode::Autonomous) {
-                "docker"
-            } else {
-                "local"
-            });
+            let selected =
+                runner
+                    .map(Runner::as_str)
+                    .unwrap_or(if matches!(mode, Mode::Autonomous) {
+                        "docker"
+                    } else {
+                        "local"
+                    });
             let execution = daemon
                 .rpc(
                     "run/execute",
@@ -609,7 +635,10 @@ async fn chat(
                     .unwrap_or("unknown")
             )
         } else {
-            println!("plan ready; mode {} does not execute changes", mode.as_str());
+            println!(
+                "plan ready; mode {} does not execute changes",
+                mode.as_str()
+            );
             format!("run {run_id} planned {task_count} task(s) without execution")
         };
 
@@ -674,7 +703,11 @@ async fn memory_daemon(daemon: &DaemonClient, command: MemoryCommand) -> Result<
                     .await?,
             )?;
         }
-        MemoryCommand::Search { query, scope, limit } => {
+        MemoryCommand::Search {
+            query,
+            scope,
+            limit,
+        } => {
             print_json(
                 &daemon
                     .rpc(
@@ -796,7 +829,11 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
                 )?;
                 print_json(&json!({"stored": true, "scope": scope, "key": key}))?;
             }
-            MemoryCommand::Search { query, scope, limit } => {
+            MemoryCommand::Search {
+                query,
+                scope,
+                limit,
+            } => {
                 print_json(&serde_json::to_value(engine.store.memory_search(
                     scope.as_deref(),
                     &query,
@@ -978,6 +1015,9 @@ fn read_secret(prompt: &str) -> Result<String> {
     #[cfg(not(unix))]
     let echo_disabled = false;
 
+    if !echo_disabled {
+        bail!("Cannot hide terminal input. Enter the key in the OpenForge GUI instead.");
+    }
     let mut value = String::new();
     let read = io::stdin().read_line(&mut value);
 
@@ -1202,3 +1242,66 @@ delegation:
     - "security-reviewer"
     - "documentation-engineer"
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Json, Router, http::HeaderMap, routing::post};
+
+    #[tokio::test]
+    async fn remote_cli_sends_auth_and_rejects_mismatched_responses() {
+        let app = Router::new().route("/v1/rpc", post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+            assert_eq!(headers["authorization"], "Bearer daemon-test-token");
+            assert_eq!(body["method"], "gateway/status");
+            Json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"connected":true,"model":"auto-select"}}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = DaemonClient::new(
+            format!("http://{address}"),
+            Some("daemon-test-token".into()),
+        )
+        .unwrap();
+        let status = client.rpc("gateway/status", json!({})).await.unwrap();
+        assert_eq!(status["model"], "auto-select");
+        server.abort();
+
+        let app = Router::new().route(
+            "/v1/rpc",
+            post(|| async { Json(json!({"jsonrpc":"2.0","id":999,"result":{}})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = DaemonClient::new(format!("http://{address}"), None).unwrap();
+        assert!(
+            client
+                .rpc("gateway/status", json!({}))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("mismatched")
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn chat_preserves_recent_intent_with_unicode_safe_context_limit() {
+        let history = vec![("user".into(), "界".repeat(10_000))];
+        let objective = conversation_objective(&history, "Fix the tests");
+        assert!(objective.len() <= 24_000);
+        assert!(objective.ends_with("CURRENT INSTRUCTION\nFix the tests"));
+        assert!(
+            Cli::try_parse_from([
+                "openforge",
+                "--daemon-url",
+                "http://localhost:8875",
+                "chat",
+                "."
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["openforge", "--standalone", "providers"]).is_ok());
+    }
+}

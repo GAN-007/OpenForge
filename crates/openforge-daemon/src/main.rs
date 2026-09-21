@@ -1139,3 +1139,6 @@ fn parse_autonomy(value: &str) -> Result<AutonomyLevel> {
         other => anyhow::bail!("unknown autonomy level {other}"),
     }
 }
+
+#[cfg(test)]
+mod runtime_tests;

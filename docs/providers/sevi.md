@@ -16,7 +16,7 @@ Preset:
 - Model: `auto-select`
 - Transport: OpenAI-compatible `POST /cursor/chat/completions` with Bearer authorization. No extra `/v1` is appended.
 
-The key remains only in daemon process memory. It is not written to YAML, the SQLite store, localStorage/sessionStorage or returned from the settings API. The input clears after successful connection. Restarting the daemon requires re-entering the key. **Disconnect Sevi** restores the original provider configuration for new operations; in-flight tasks retain their provider snapshot until they finish. This setting applies to clients sharing that daemon; the standalone CLI creates its own engine and does not inherit a daemon session key.
+The key remains only in daemon process memory. It is not written to YAML, the SQLite store, localStorage/sessionStorage or returned from the settings API. The input clears after successful connection. Restarting the daemon requires re-entering the key. **Disconnect Sevi** restores the original provider configuration for new operations; in-flight tasks retain their provider snapshot until they finish. This setting applies to clients sharing that daemon; the CLI now connects to that daemon by default. Only explicit `--standalone` mode creates its own engine and does not inherit a daemon session key. Use `./setup.sh` to select and launch an interface.
 
 Sevi controls authentication, available models and quotas. The test reports failed authentication, HTTP errors, timeout or incompatible JSON output without returning upstream diagnostic bodies that could expose credentials. The adapter redacts credentials in debug formatting.
 

@@ -8,6 +8,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ pub struct ArtifactDescriptor {
 #[derive(Clone)]
 pub struct ArtifactStore {
     root: PathBuf,
+    stream_lock: Arc<Mutex<()>>,
 }
 
 impl ArtifactStore {
@@ -32,7 +34,10 @@ impl ArtifactStore {
         fs::create_dir_all(root.join("objects"))?;
         fs::create_dir_all(root.join("metadata"))?;
         fs::create_dir_all(root.join("tmp"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            stream_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     pub fn put_bytes(
@@ -116,6 +121,10 @@ impl ArtifactStore {
     }
 
     pub fn write_stream_chunk(&self, upload_id: &str, bytes: &[u8]) -> Result<()> {
+        let _guard = self
+            .stream_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact stream lock poisoned"))?;
         validate_upload_id(upload_id)?;
         let path = self.root.join("tmp").join(format!("{upload_id}.stream"));
         let mut file = fs::OpenOptions::new()
@@ -131,6 +140,11 @@ impl ArtifactStore {
         upload_id: &str,
         metadata: BTreeMap<String, Value>,
     ) -> Result<ArtifactDescriptor> {
+        // Keep the hashed bytes immutable until the object has been published.
+        let _guard = self
+            .stream_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact stream lock poisoned"))?;
         validate_upload_id(upload_id)?;
         let stream_path = self.root.join("tmp").join(format!("{upload_id}.stream"));
         let metadata_path = self
@@ -192,6 +206,10 @@ impl ArtifactStore {
     }
 
     pub fn abort_stream(&self, upload_id: &str) -> Result<bool> {
+        let _guard = self
+            .stream_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact stream lock poisoned"))?;
         validate_upload_id(upload_id)?;
         let stream_path = self.root.join("tmp").join(format!("{upload_id}.stream"));
         let metadata_path = self
@@ -326,6 +344,34 @@ fn validate_digest(digest: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_chunk_and_commit_publish_only_consistent_objects() {
+        for _ in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let store = ArtifactStore::open(dir.path()).unwrap();
+            let upload = store
+                .begin_stream("application/octet-stream", "test")
+                .unwrap();
+            store
+                .write_stream_chunk(&upload, &vec![1; 1024 * 1024])
+                .unwrap();
+            let other = store.clone();
+            let id = upload.clone();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let start = barrier.clone();
+            let writer = std::thread::spawn(move || {
+                start.wait();
+                other.write_stream_chunk(&id, &vec![2; 1024 * 1024])
+            });
+            barrier.wait();
+            let descriptor = store.commit_stream(&upload, BTreeMap::new()).unwrap();
+            let _ = writer.join().unwrap(); // A chunk after commit is correctly rejected.
+            let bytes = store.get(&descriptor.digest).unwrap();
+            assert_eq!(bytes.len() as u64, descriptor.bytes);
+            assert_eq!(hex::encode(Sha256::digest(&bytes)), descriptor.digest);
+        }
+    }
 
     #[test]
     fn streamed_upload_is_finalized_without_buffering_the_whole_payload() {
