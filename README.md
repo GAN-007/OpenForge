@@ -25,6 +25,46 @@ The daemon binds to `127.0.0.1:8765` by default. Browser CORS is restricted to t
 
 The default development policy denies common secret paths, host Git metadata, privilege escalation, SSH, pushes, destructive cluster commands and production-like secret access.
 
+## One-command setup and interface launcher
+
+From the repository root:
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+The setup script verifies or installs the supported Rust, Node/pnpm, Python and system build requirements, builds the CLI/daemon and client surfaces, starts or reuses the local daemon, installs `openforge` and `openforge-daemon` into `~/.local/bin`, and then offers:
+
+1. interactive CLI/terminal;
+2. VS Code or VSCodium IDE mode;
+3. the Tauri desktop GUI;
+4. the browser web console.
+
+You can skip the menu with `./setup.sh --interface cli --workspace /path/to/project`.
+
+### Shared model configuration
+
+The daemon is the single model runtime. Configure a gateway/model once and the CLI, browser, desktop and IDE use that same active configuration:
+
+```bash
+openforge model configure \
+  --provider-name sevi \
+  --kind openai-compatible \
+  --base-url https://your-gateway.example/v1 \
+  --model your-model-alias
+```
+
+If `--api-key` is omitted, the CLI prompts without echoing the key. Browser and desktop expose the same setting. The daemon stores the credential in its user configuration directory with owner-only permissions on Unix and never returns the key through the settings API.
+
+Start a Claude/Codex-style project session:
+
+```bash
+openforge chat /path/to/project
+```
+
+The terminal connects to the shared daemon by default. It keeps recent conversational context, plans against the real repository, executes through OpenForge's policy/Git/sandbox pipeline, and uses the same model configured by the GUI or browser. If the selected folder is not yet a Git repository, OpenForge can initialize local Git metadata and a baseline commit after confirmation so the worktree safety model remains available. Use `--standalone` only when you intentionally want the legacy in-process engine instead of the shared daemon.
+
 ## Quick start
 
 Requirements:
