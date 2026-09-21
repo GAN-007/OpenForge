@@ -699,9 +699,7 @@ impl Store {
             [&day_start],
             |row| row.get(0),
         )?;
-        if daily_spent + daily_settled + daily_reserved + estimated
-            > daily_limit + f64::EPSILON
-        {
+        if daily_spent + daily_settled + daily_reserved + estimated > daily_limit + f64::EPSILON {
             anyhow::bail!("budget reservation would exceed daily hard limit");
         }
 
@@ -1084,7 +1082,6 @@ mod tests {
         );
         assert_ne!(first.event_hash, second.event_hash);
     }
-
 
     #[test]
     fn budget_reservations_enforce_daily_limit_transactionally() {
