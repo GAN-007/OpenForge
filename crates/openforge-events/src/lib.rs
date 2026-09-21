@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use openforge_protocol::EventEnvelope;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -76,7 +76,10 @@ pub fn verify_event_chain(events: &[EventEnvelope]) -> Result<EventIntegrityRepo
 pub fn require_valid_chain(events: &[EventEnvelope]) -> Result<()> {
     let report = verify_event_chain(events)?;
     if !report.valid {
-        bail!("event chain integrity failure: {}", report.violations.join("; "));
+        bail!(
+            "event chain integrity failure: {}",
+            report.violations.join("; ")
+        );
     }
     Ok(())
 }

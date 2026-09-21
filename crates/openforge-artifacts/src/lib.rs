@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,7 +51,7 @@ impl ArtifactStore {
             let tmp = self
                 .root
                 .join("tmp")
-                .join(format!("{digest}.{}.tmp", std::process::id()));
+                .join(format!("{digest}.{}.tmp", uuid::Uuid::new_v4()));
             {
                 let mut file = fs::OpenOptions::new()
                     .create_new(true)
@@ -137,10 +137,10 @@ impl ArtifactStore {
             .root
             .join("tmp")
             .join(format!("{upload_id}.stream.meta.json"));
-        let stream_metadata: Value = serde_json::from_slice(
-            &fs::read(&metadata_path)
-                .with_context(|| format!("read artifact stream metadata {}", metadata_path.display()))?,
-        )?;
+        let stream_metadata: Value =
+            serde_json::from_slice(&fs::read(&metadata_path).with_context(|| {
+                format!("read artifact stream metadata {}", metadata_path.display())
+            })?)?;
         let media_type = stream_metadata
             .get("media_type")
             .and_then(Value::as_str)
@@ -266,10 +266,11 @@ impl ArtifactStore {
             .root
             .join("metadata")
             .join(format!("{}.json", descriptor.digest));
-        let tmp = self
-            .root
-            .join("tmp")
-            .join(format!("{}.metadata.tmp", descriptor.digest));
+        let tmp = self.root.join("tmp").join(format!(
+            "{}.{}.metadata.tmp",
+            descriptor.digest,
+            uuid::Uuid::new_v4()
+        ));
         fs::write(&tmp, serde_json::to_vec_pretty(descriptor)?)?;
         fs::rename(tmp, path)?;
         Ok(())
@@ -344,20 +345,40 @@ mod tests {
     }
 
     #[test]
-    fn stores_and_verifies_content_addressed_bytes() {
+    fn concurrent_writers_share_content_without_temp_file_collisions() {
         let root = std::env::temp_dir().join(format!(
-            "openforge-artifacts-{}",
-            std::process::id()
+            "openforge-artifacts-concurrent-{}",
+            uuid::Uuid::new_v4()
         ));
+        let store = ArtifactStore::open(&root).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .put_bytes(b"shared", "text/plain", "test", BTreeMap::new())
+                        .unwrap()
+                })
+            })
+            .collect();
+        for writer in writers {
+            let descriptor = writer.join().unwrap();
+            assert!(store.verify(&descriptor.digest).unwrap());
+            assert_eq!(store.descriptor(&descriptor.digest).unwrap().bytes, 6);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stores_and_verifies_content_addressed_bytes() {
+        let root = std::env::temp_dir().join(format!("openforge-artifacts-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let store = ArtifactStore::open(&root).unwrap();
         let descriptor = store
-            .put_bytes(
-                b"openforge",
-                "text/plain",
-                "test",
-                BTreeMap::new(),
-            )
+            .put_bytes(b"openforge", "text/plain", "test", BTreeMap::new())
             .unwrap();
         assert!(store.verify(&descriptor.digest).unwrap());
         assert_eq!(store.get(&descriptor.digest).unwrap(), b"openforge");

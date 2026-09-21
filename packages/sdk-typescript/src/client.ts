@@ -6,6 +6,7 @@ import type {
   EventIntegrityReport,
   PluginCapabilityDeclaration,
   PluginManifest,
+  ModelSpec,
   RepositoryIndex,
   Run,
   SearchHit,
@@ -54,6 +55,9 @@ export class OpenForgeClient {
       signal: signal ?? null,
     });
     const body = (await response.json()) as RpcResponse<T>;
+    if (!body || typeof body !== "object" || body.jsonrpc !== "2.0" || body.id !== id) {
+      throw new Error("OpenForge RPC returned an invalid or mismatched response");
+    }
     if (!response.ok || body.error) {
       throw new Error(
         body.error?.message ?? "OpenForge RPC failed: " + response.status,
@@ -96,6 +100,52 @@ export class OpenForgeClient {
       "run/execute",
       params,
     );
+  }
+
+  listRuns(limit = 100, offset = 0) {
+    return this.rpc<Run[]>("run/list", { limit, offset });
+  }
+
+  /** Stream durable audit events. Reconnect using the last yielded sequence. */
+  async *streamEvents(runId: string, afterSequence = 0, signal?: AbortSignal): AsyncGenerator<EventEnvelope> {
+    const headers: Record<string, string> = { accept: "text/event-stream" };
+    if (this.apiToken) headers.authorization = "Bearer " + this.apiToken;
+    const response = await fetch(
+      this.baseUrl.replace(/\/$/, "") + "/v1/runs/" + encodeURIComponent(runId) +
+        "/events/stream?after_sequence=" + afterSequence,
+      { headers, signal: signal ?? null },
+    );
+    if (!response.ok || !response.body) throw new Error("OpenForge event stream failed: " + response.status);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventType = "";
+    let data: string[] = [];
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline).replace(/\r$/, "");
+          buffer = buffer.slice(newline + 1);
+          if (line === "") {
+            if (eventType === "error") throw new Error(data.join("\n"));
+            if (data.length && eventType === "audit") yield JSON.parse(data.join("\n")) as EventEnvelope;
+            eventType = "";
+            data = [];
+          } else if (line.startsWith("event:")) {
+            eventType = line.slice(6).replace(/^ /, "");
+          } else if (line.startsWith("data:")) {
+            data.push(line.slice(5).replace(/^ /, ""));
+          }
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   }
 
   getRun(runId: string) {
@@ -233,6 +283,10 @@ export class OpenForgeClient {
 
   telemetry() {
     return this.rpc<TelemetrySnapshot>("telemetry/snapshot");
+  }
+
+  listModels() {
+    return this.rpc<ModelSpec[]>("model/list");
   }
 
   providers() {

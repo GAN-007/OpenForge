@@ -3,7 +3,7 @@ mod migrations;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use openforge_protocol::{Actor, EventEnvelope, Run, RunStatus, SecretLeaseDescriptor, TaskNode};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -103,6 +103,28 @@ impl Store {
         Ok(())
     }
 
+    /// Claim execution atomically across all clients sharing this database.
+    pub fn claim_run(&self, id: Uuid) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE runs SET status=?2, updated_at=?3
+             WHERE id=?1 AND status IN (?4,?5,?6,?7)",
+            params![
+                id.to_string(),
+                serde_json::to_string(&RunStatus::Running)?,
+                Utc::now().to_rfc3339(),
+                serde_json::to_string(&RunStatus::Planning)?,
+                serde_json::to_string(&RunStatus::AwaitingApproval)?,
+                serde_json::to_string(&RunStatus::Paused)?,
+                serde_json::to_string(&RunStatus::Failed)?
+            ],
+        )?;
+        if changed != 1 {
+            anyhow::bail!("run is missing, already executing, completed, or cancelled");
+        }
+        Ok(())
+    }
+
     pub fn update_run_status(&self, id: Uuid, status: RunStatus) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute(
@@ -169,6 +191,27 @@ impl Store {
         .transpose()
     }
 
+    /// Newest runs first, with bounded pages and deterministic tie breaking.
+    pub fn list_runs(&self, limit: usize, offset: usize) -> Result<Vec<Run>> {
+        let ids: Vec<String> = {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            let mut stmt = conn.prepare(
+                "SELECT id FROM runs ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            stmt.query_map(
+                params![limit.min(1000) as i64, i64::try_from(offset)?],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        ids.into_iter()
+            .map(|id| {
+                self.get_run(Uuid::parse_str(&id)?)?
+                    .context("run disappeared during listing")
+            })
+            .collect()
+    }
+
     pub fn upsert_task(&self, task: &TaskNode) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute(
@@ -193,8 +236,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt =
             conn.prepare("SELECT task_json FROM tasks WHERE run_id=?1 ORDER BY rowid")?;
-        let rows =
-            stmt.query_map([run_id.to_string()], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([run_id.to_string()], |row| row.get::<_, String>(0))?;
 
         rows.map(|row| Ok(serde_json::from_str::<TaskNode>(&row?)?))
             .collect()
@@ -233,8 +275,7 @@ impl Store {
             "payload": &payload,
             "previous_event_hash": &previous
         });
-        let event_hash =
-            hex::encode(Sha256::digest(serde_json::to_vec(&canonical)?));
+        let event_hash = hex::encode(Sha256::digest(serde_json::to_vec(&canonical)?));
 
         tx.execute(
             "INSERT INTO events(
@@ -322,11 +363,8 @@ impl Store {
                 event_id: Uuid::parse_str(&event_id)?,
                 sequence,
                 run_id: Some(run_id),
-                task_id: task_id
-                    .map(|value| Uuid::parse_str(&value))
-                    .transpose()?,
-                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
-                    .with_timezone(&Utc),
+                task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?.with_timezone(&Utc),
                 actor: serde_json::from_str(&actor)?,
                 event_type,
                 payload: serde_json::from_str(&payload)?,
@@ -337,11 +375,7 @@ impl Store {
         Ok(events)
     }
 
-    pub fn list_all_events(
-        &self,
-        after_sequence: i64,
-        limit: usize,
-    ) -> Result<Vec<EventEnvelope>> {
+    pub fn list_all_events(&self, after_sequence: i64, limit: usize) -> Result<Vec<EventEnvelope>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT sequence,event_id,run_id,task_id,timestamp,actor_json,event_type,
@@ -352,23 +386,20 @@ impl Store {
              LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(
-            params![after_sequence, limit.min(100_000) as i64],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, String>(9)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![after_sequence, limit.min(100_000) as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
 
         let mut events = Vec::new();
         for row in rows {
@@ -390,8 +421,7 @@ impl Store {
                 sequence,
                 run_id: run_id.map(|value| Uuid::parse_str(&value)).transpose()?,
                 task_id: task_id.map(|value| Uuid::parse_str(&value)).transpose()?,
-                timestamp: DateTime::parse_from_rfc3339(&timestamp)?
-                    .with_timezone(&Utc),
+                timestamp: DateTime::parse_from_rfc3339(&timestamp)?.with_timezone(&Utc),
                 actor: serde_json::from_str(&actor)?,
                 event_type,
                 payload: serde_json::from_str(&payload)?,
@@ -507,7 +537,8 @@ impl Store {
                 "revoked_at": row.get::<_, Option<String>>(6)?,
             }))
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn register_acp_process(&self, program: &str) -> Result<Uuid> {
@@ -550,7 +581,8 @@ impl Store {
                 "active": closed_at.is_none(),
             }))
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn budget_limits(&self, run_id: Uuid) -> Result<Option<BudgetLimitsRecord>> {
@@ -572,7 +604,12 @@ impl Store {
     }
 
     pub fn set_budget_limits(&self, run_id: Uuid, limits: &BudgetLimitsRecord) -> Result<()> {
-        for value in [limits.per_call, limits.per_task, limits.per_run, limits.daily] {
+        for value in [
+            limits.per_call,
+            limits.per_task,
+            limits.per_run,
+            limits.daily,
+        ] {
             if !value.is_finite() || value < 0.0 {
                 anyhow::bail!("invalid budget limit");
             }
@@ -586,7 +623,13 @@ impl Store {
                per_task=excluded.per_task,
                per_run=excluded.per_run,
                daily=excluded.daily",
-            params![run_id.to_string(), limits.per_call, limits.per_task, limits.per_run, limits.daily],
+            params![
+                run_id.to_string(),
+                limits.per_call,
+                limits.per_task,
+                limits.per_run,
+                limits.daily
+            ],
         )?;
         Ok(())
     }
@@ -597,7 +640,8 @@ impl Store {
         estimated: f64,
         hard_limit: f64,
     ) -> Result<Uuid> {
-        if !estimated.is_finite() || estimated < 0.0 || !hard_limit.is_finite() || hard_limit < 0.0 {
+        if !estimated.is_finite() || estimated < 0.0 || !hard_limit.is_finite() || hard_limit < 0.0
+        {
             anyhow::bail!("invalid budget reservation");
         }
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -627,13 +671,21 @@ impl Store {
             "INSERT INTO budget_reservations(
                 reservation_id,run_id,estimated_usd,actual_usd,created_at,settled_at
              ) VALUES(?1,?2,?3,NULL,?4,NULL)",
-            params![reservation_id.to_string(), run_id.to_string(), estimated, Utc::now().to_rfc3339()],
+            params![
+                reservation_id.to_string(),
+                run_id.to_string(),
+                estimated,
+                Utc::now().to_rfc3339()
+            ],
         )?;
         tx.commit()?;
         Ok(reservation_id)
     }
 
-    pub fn budget_reservation(&self, reservation_id: Uuid) -> Result<Option<BudgetReservationRecord>> {
+    pub fn budget_reservation(
+        &self,
+        reservation_id: Uuid,
+    ) -> Result<Option<BudgetReservationRecord>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.query_row(
             "SELECT run_id,estimated_usd,actual_usd,created_at,settled_at
@@ -643,26 +695,41 @@ impl Store {
                 let run_id: String = row.get(0)?;
                 let created_at: String = row.get(3)?;
                 let settled_at: Option<String> = row.get(4)?;
-                Ok((run_id, row.get::<_, f64>(1)?, row.get::<_, Option<f64>>(2)?, created_at, settled_at))
+                Ok((
+                    run_id,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                    created_at,
+                    settled_at,
+                ))
             },
         )
         .optional()?
-        .map(|(run_id, estimated_usd, actual_usd, created_at, settled_at)| -> Result<_> {
-            Ok(BudgetReservationRecord {
-                reservation_id,
-                run_id: Uuid::parse_str(&run_id)?,
-                estimated_usd,
-                actual_usd,
-                created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
-                settled_at: settled_at
-                    .map(|value| DateTime::parse_from_rfc3339(&value).map(|date| date.with_timezone(&Utc)))
-                    .transpose()?,
-            })
-        })
+        .map(
+            |(run_id, estimated_usd, actual_usd, created_at, settled_at)| -> Result<_> {
+                Ok(BudgetReservationRecord {
+                    reservation_id,
+                    run_id: Uuid::parse_str(&run_id)?,
+                    estimated_usd,
+                    actual_usd,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                    settled_at: settled_at
+                        .map(|value| {
+                            DateTime::parse_from_rfc3339(&value)
+                                .map(|date| date.with_timezone(&Utc))
+                        })
+                        .transpose()?,
+                })
+            },
+        )
         .transpose()
     }
 
-    pub fn record_settled_cost(&self, reservation_id: Uuid, actual: f64) -> Result<BudgetReservationRecord> {
+    pub fn record_settled_cost(
+        &self,
+        reservation_id: Uuid,
+        actual: f64,
+    ) -> Result<BudgetReservationRecord> {
         if !actual.is_finite() || actual < 0.0 {
             anyhow::bail!("invalid settled cost");
         }
@@ -696,11 +763,14 @@ impl Store {
             anyhow::bail!("budget settlement would exceed run hard limit");
         }
         let settled_at = Utc::now();
-        tx.execute(
+        let changed = tx.execute(
             "UPDATE budget_reservations SET actual_usd=?2,settled_at=?3
              WHERE reservation_id=?1 AND settled_at IS NULL",
             params![reservation_id.to_string(), actual, settled_at.to_rfc3339()],
         )?;
+        if changed != 1 {
+            anyhow::bail!("budget reservation is already settled");
+        }
         tx.commit()?;
         Ok(BudgetReservationRecord {
             actual_usd: Some(actual),
@@ -778,8 +848,21 @@ impl Store {
         }
 
         let now = Utc::now().to_rfc3339();
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // UNIQUE permits duplicate NULLs in SQLite; IS compares nullable IDs.
+        // Replace legacy duplicates atomically as well as handling fresh writes.
+        tx.execute(
+            "DELETE FROM memory WHERE scope=?1 AND project_id IS ?2
+             AND repository_id IS ?3 AND key=?4",
+            params![
+                scope,
+                project_id.map(|value| value.to_string()),
+                repository_id,
+                key
+            ],
+        )?;
+        tx.execute(
             "INSERT INTO memory(
                 id,scope,project_id,repository_id,key,value_json,created_at,updated_at
              ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
@@ -796,6 +879,7 @@ impl Store {
                 &now
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -820,34 +904,23 @@ impl Store {
              LIMIT ?3",
         )?;
 
-        let rows = stmt.query_map(
-            params![scope, pattern, limit.min(1000) as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![scope, pattern, limit.min(1000) as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
 
         let mut result = Vec::new();
         for row in rows {
-            let (
-                id,
-                scope,
-                project_id,
-                repository_id,
-                key,
-                value_json,
-                created_at,
-                updated_at,
-            ) = row?;
+            let (id, scope, project_id, repository_id, key, value_json, created_at, updated_at) =
+                row?;
             result.push(serde_json::json!({
                 "id": id,
                 "scope": scope,
@@ -862,11 +935,7 @@ impl Store {
         Ok(result)
     }
 
-    pub fn memory_delete(
-        &self,
-        scope: Option<&str>,
-        key: &str,
-    ) -> Result<usize> {
+    pub fn memory_delete(&self, scope: Option<&str>, key: &str) -> Result<usize> {
         if let Some(scope) = scope {
             validate_memory_scope(scope)?;
         }
@@ -965,10 +1034,27 @@ mod tests {
                 .len(),
             1
         );
-        assert!(store
-            .memory_search(Some("project"), "percentXkey", 10)
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .memory_search(Some("project"), "percentXkey", 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn memory_put_replaces_nullable_keys_without_crossing_repositories() {
+        let store = Store::in_memory().unwrap();
+        for repo in [None, Some("one"), Some("two")] {
+            for value in [1, 2] {
+                store
+                    .memory_put("project", None, repo, "key", &serde_json::json!(value))
+                    .unwrap();
+            }
+        }
+        let rows = store.memory_search(Some("project"), "key", 100).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row["value"] == 2));
     }
 
     #[test]

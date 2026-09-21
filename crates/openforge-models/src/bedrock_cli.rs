@@ -2,7 +2,7 @@ use crate::ModelProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 use tokio::process::Command;
 

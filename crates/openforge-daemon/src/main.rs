@@ -1,12 +1,14 @@
+mod http_api;
+
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::State,
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use openforge_artifacts::ArtifactStore;
 use openforge_context::RepositoryIndex;
@@ -17,14 +19,14 @@ use openforge_mcp::{McpProcessConfig, McpStdioClient};
 use openforge_plugins::PluginHost;
 use openforge_policy::{AgentPolicy, CapabilityRequest};
 use openforge_protocol::{
-    AutonomyLevel, CapabilitySet, EventEnvelope, RpcError, RpcRequest, RpcResponse,
-    PROTOCOL_VERSION,
+    AutonomyLevel, CapabilitySet, EventEnvelope, PROTOCOL_VERSION, RpcError, RpcRequest,
+    RpcResponse,
 };
 use openforge_search::SearchIndex;
 use openforge_secrets::{EnvironmentSecretBroker, SecretBroker};
 use openforge_symbols::SymbolGraph;
 use openforge_telemetry::TelemetryRegistry;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -59,13 +61,12 @@ struct AppState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
     let args = Args::parse();
-    let config = OpenForgeConfig::load(&args.config).unwrap_or_default();
+    let config = OpenForgeConfig::load(&args.config)?;
     let artifacts = ArtifactStore::open(&config.artifact_dir)?;
     let api_token = std::env::var("OPENFORGE_API_TOKEN")
         .ok()
@@ -84,12 +85,17 @@ async fn main() -> Result<()> {
     let origins = allowed_origins()?;
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([Method::POST, Method::GET])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+        .allow_methods([Method::POST, Method::GET, Method::DELETE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::HeaderName::from_static("last-event-id"),
+        ]);
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/rpc", post(rpc))
+        .merge(http_api::routes())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state.clone());
@@ -193,6 +199,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "tasks",
                 "events",
                 "event_integrity",
+                "event_stream",
+                "run_listing",
+                "rest_api",
                 "budgets",
                 "memory",
                 "policies",
@@ -293,6 +302,25 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .await?;
             Ok(json!({"integration_branch": branch}))
         }
+        "run/list" => {
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .min(1000) as usize;
+            let offset = request
+                .params
+                .get("offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            Ok(serde_json::to_value(
+                state
+                    .engine
+                    .store
+                    .list_runs(limit, usize::try_from(offset)?)?,
+            )?)
+        }
         "run/get" => {
             let id = required_uuid(&request.params, "run_id")?;
             Ok(serde_json::to_value(state.engine.store.get_run(id)?)?)
@@ -343,17 +371,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .and_then(Value::as_str)
                 .map(Uuid::parse_str)
                 .transpose()?;
-            let repository_id = request
-                .params
-                .get("repository_id")
-                .and_then(Value::as_str);
-            state.engine.store.memory_put(
-                &scope,
-                project_id,
-                repository_id,
-                &key,
-                &value,
-            )?;
+            let repository_id = request.params.get("repository_id").and_then(Value::as_str);
+            state
+                .engine
+                .store
+                .memory_put(&scope, project_id, repository_id, &key, &value)?;
             Ok(json!({"ok": true}))
         }
         "memory/search" => {
@@ -484,12 +506,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     .unwrap_or_else(|| json!({})),
             )
             .context("artifact metadata must be an object")?;
-            Ok(serde_json::to_value(state.artifacts.put_bytes(
-                &bytes,
-                media_type,
-                source,
-                metadata,
-            )?)?)
+            Ok(serde_json::to_value(
+                state
+                    .artifacts
+                    .put_bytes(&bytes, media_type, source, metadata)?,
+            )?)
         }
         "artifact/get" => {
             let digest = required_string(&request.params, "sha256")?;
@@ -541,9 +562,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     );
                 }
                 openforge_policy::Decision::Deny => {
-                    anyhow::bail!(
-                        "secret {secret_name} is denied by policy {policy_path}"
-                    );
+                    anyhow::bail!("secret {secret_name} is denied by policy {policy_path}");
                 }
             }
 
@@ -566,9 +585,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "revoked": state.engine.store.revoke_secret_lease(lease_id)?
             }))
         }
-        "secret/list" => {
-            Ok(serde_json::to_value(state.engine.store.list_secret_leases()?)?)
-        }
+        "secret/list" => Ok(serde_json::to_value(
+            state.engine.store.list_secret_leases()?,
+        )?),
         "acp/spawn" => {
             let program = required_string(&request.params, "program")?;
             let args = optional_string_array(&request.params, "args")?;
@@ -668,9 +687,9 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 Ok(json!({"closed": false, "reason": "process not found"}))
             }
         }
-        "acp/list" => {
-            Ok(serde_json::to_value(state.engine.store.list_acp_processes()?)?)
-        }
+        "acp/list" => Ok(serde_json::to_value(
+            state.engine.store.list_acp_processes()?,
+        )?),
         "mcp/list_tools" => {
             let server_name = required_string(&request.params, "server_name")?;
             let mut client = initialized_mcp_client(state, &server_name).await?;
@@ -703,7 +722,11 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                     anyhow::bail!("MCP tool {tool_name} is denied by policy");
                 }
             }
-            state.engine.tool_bus.mcp_call(&server_name, &tool_name, arguments).await
+            state
+                .engine
+                .tool_bus
+                .mcp_call(&server_name, &tool_name, arguments)
+                .await
         }
         "mcp/list_resources" => {
             let server_name = required_string(&request.params, "server_name")?;
@@ -745,12 +768,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let (_, daily_settled) = state.engine.store.daily_budget_usage()?;
             let run_spent = state.engine.store.run_cost(run_id)? + settled;
             let daily_spent = state.engine.store.daily_cost()? + daily_settled;
-            let guard = BudgetGuard::with_usage(
-                limits.clone(),
-                0.0,
-                run_spent,
-                daily_spent,
-            )?;
+            let guard = BudgetGuard::with_usage(limits.clone(), 0.0, run_spent, daily_spent)?;
             let _reservation = guard.reserve(estimated).await?;
             let reservation_id = state.engine.store.register_budget_reservation(
                 run_id,
@@ -779,12 +797,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let (_, daily_settled) = state.engine.store.daily_budget_usage()?;
             let run_spent = state.engine.store.run_cost(reservation.run_id)? + settled;
             let daily_spent = state.engine.store.daily_cost()? + daily_settled;
-            let guard = BudgetGuard::with_usage(
-                limits,
-                0.0,
-                run_spent,
-                daily_spent,
-            )?;
+            let guard = BudgetGuard::with_usage(limits, 0.0, run_spent, daily_spent)?;
             guard.reserve(actual).await?.settle(actual).await?;
             let settled = state
                 .engine
@@ -799,12 +812,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             let (daily_reserved, daily_settled) = state.engine.store.daily_budget_usage()?;
             let run_spent = state.engine.store.run_cost(run_id)? + settled;
             let daily_spent = state.engine.store.daily_cost()? + daily_settled;
-            let guard = BudgetGuard::with_usage(
-                limits.clone(),
-                0.0,
-                run_spent,
-                daily_spent,
-            )?;
+            let guard = BudgetGuard::with_usage(limits.clone(), 0.0, run_spent, daily_spent)?;
             let (task, run, daily) = guard.snapshot().await;
             Ok(json!({
                 "run_id": run_id,
@@ -874,15 +882,13 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 host.validate_capability(&plugin_id, &capability)?,
             )?)
         }
+        "model/list" => Ok(serde_json::to_value(state.engine.models())?),
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
         _ => anyhow::bail!("unknown RPC method {}", request.method),
     }
 }
 
-async fn initialized_mcp_client(
-    state: &AppState,
-    server_name: &str,
-) -> Result<McpStdioClient> {
+async fn initialized_mcp_client(state: &AppState, server_name: &str) -> Result<McpStdioClient> {
     let server = state
         .engine
         .config
@@ -913,7 +919,11 @@ fn budget_limits_for_run(state: &AppState, run_id: Uuid) -> Result<BudgetLimits>
         });
     }
 
-    let run = state.engine.store.get_run(run_id)?.context("run not found")?;
+    let run = state
+        .engine
+        .store
+        .get_run(run_id)?
+        .context("run not found")?;
     let limits = BudgetLimits {
         per_call: run.budget.hard_limit.min(1.0),
         per_task: run.budget.hard_limit.min(5.0),
@@ -953,18 +963,16 @@ fn load_global_events(state: &AppState, maximum: usize) -> Result<Vec<EventEnvel
         }
     }
 
+    if events.len() == maximum && !state.engine.store.list_all_events(after, 1)?.is_empty() {
+        anyhow::bail!(
+            "audit ledger exceeds verification limit; refusing to report a partial chain as valid"
+        );
+    }
     Ok(events)
 }
 
-fn evaluate_policy(
-    policy: &AgentPolicy,
-    capability: &str,
-    params: &Value,
-) -> Result<String> {
-    let subject = params
-        .get("subject")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+fn evaluate_policy(policy: &AgentPolicy, capability: &str, params: &Value) -> Result<String> {
+    let subject = params.get("subject").and_then(Value::as_str).unwrap_or("");
     let decision = match capability {
         "read_path" => policy.evaluate(CapabilityRequest::ReadPath(subject)),
         "write_path" => policy.evaluate(CapabilityRequest::WritePath(subject)),

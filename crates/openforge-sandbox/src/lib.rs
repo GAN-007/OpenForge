@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use openforge_protocol::SandboxSecurityProfile;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::Command,
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 use uuid::Uuid;
 
@@ -114,7 +114,9 @@ impl SandboxBackend for LocalProcessBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         Ok(SandboxLease {
             id: Uuid::new_v4(),
             backend: self.name().into(),
@@ -135,9 +137,9 @@ impl SandboxBackend for LocalProcessBackend {
             .kill_on_drop(true);
         command.env_clear();
 
-        for (key, value) in std::env::vars().filter(|(key, _)| {
-            ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str())
-        }) {
+        for (key, value) in std::env::vars()
+            .filter(|(key, _)| ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"].contains(&key.as_str()))
+        {
             command.env(key, value);
         }
         for (key, value) in &lease.policy.environment {
@@ -174,7 +176,9 @@ impl SandboxBackend for DockerBackend {
 
     async fn create(&self, workspace: &Path, policy: SandboxPolicy) -> Result<SandboxLease> {
         policy.validate()?;
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         let result = host_command(
             "docker",
             &["version", "--format", "{{.Server.Version}}"],
@@ -282,22 +286,13 @@ impl SandboxBackend for DockerBackend {
         {
             Ok(result) => {
                 if result.timed_out {
-                    let _ = host_command(
-                        "docker",
-                        &["rm", "-f", &name],
-                        Duration::from_secs(10),
-                    )
-                    .await;
+                    let _ =
+                        host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 }
                 Ok(result)
             }
             Err(error) => {
-                let _ = host_command(
-                    "docker",
-                    &["rm", "-f", &name],
-                    Duration::from_secs(10),
-                )
-                .await;
+                let _ = host_command("docker", &["rm", "-f", &name], Duration::from_secs(10)).await;
                 Err(error)
             }
         }
@@ -307,7 +302,6 @@ impl SandboxBackend for DockerBackend {
         Ok(())
     }
 }
-
 
 pub struct KubernetesBackend {
     pub image: String,
@@ -365,10 +359,17 @@ impl SandboxBackend for KubernetesBackend {
             bail!("Kubernetes runner image cannot be empty");
         }
 
-        let canonical = workspace.canonicalize().context("workspace does not exist")?;
+        let canonical = workspace
+            .canonicalize()
+            .context("workspace does not exist")?;
         let version = host_command_owned(
             "kubectl",
-            &["version".into(), "--client=true".into(), "-o".into(), "json".into()],
+            &[
+                "version".into(),
+                "--client=true".into(),
+                "-o".into(),
+                "json".into(),
+            ],
             Duration::from_secs(15),
         )
         .await
@@ -495,7 +496,10 @@ impl SandboxBackend for KubernetesBackend {
                 Ok(result) if result.exit_code == 0 => {}
                 Ok(result) => {
                     self.cleanup_pod(&pod_name).await;
-                    bail!("failed to apply Kubernetes network isolation: {}", result.stderr);
+                    bail!(
+                        "failed to apply Kubernetes network isolation: {}",
+                        result.stderr
+                    );
                 }
                 Err(error) => {
                     self.cleanup_pod(&pod_name).await;
@@ -536,7 +540,10 @@ impl SandboxBackend for KubernetesBackend {
         .await?;
         if copy.exit_code != 0 {
             self.cleanup_pod(&pod_name).await;
-            bail!("failed to upload workspace to Kubernetes sandbox: {}", copy.stderr);
+            bail!(
+                "failed to upload workspace to Kubernetes sandbox: {}",
+                copy.stderr
+            );
         }
 
         Ok(SandboxLease {
@@ -694,7 +701,6 @@ async fn host_command(program: &str, args: &[&str], duration: Duration) -> Resul
         .kill_on_drop(true);
     run_bounded(command, duration.as_secs().max(1), 1024 * 1024, 1024 * 1024).await
 }
-
 
 async fn host_command_owned(
     program: &str,

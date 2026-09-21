@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -23,6 +24,11 @@ export function App() {
     () => new OpenForgeClient("http://127.0.0.1:8765", apiToken || undefined),
     [apiToken],
   );
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [objective, setObjective] = useState("");
+  const [budget, setBudget] = useState("10");
+  const [busy, setBusy] = useState(false);
+  const [streamStatus, setStreamStatus] = useState("No run selected");
   const [online, setOnline] = useState(false);
   const [runId, setRunId] = useState("");
   const [run, setRun] = useState<Run | null>(null);
@@ -36,13 +42,20 @@ export function App() {
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [error, setError] = useState("");
 
+  const refreshVersion = useRef(0);
   const refresh = useCallback(async () => {
-    setOnline(await client.health());
+    const version = ++refreshVersion.current;
+    const healthy = await client.health();
+    if (version !== refreshVersion.current) return;
+    setOnline(healthy);
     try {
-      const [audit, metrics] = await Promise.all([
+      const [audit, metrics, recentRuns] = await Promise.all([
         client.verifyEvents(),
         client.telemetry(),
+        client.listRuns(),
       ]);
+      if (version !== refreshVersion.current) return;
+      setRuns(recentRuns);
       setIntegrity(audit);
       setTelemetry(metrics);
 
@@ -51,28 +64,86 @@ export function App() {
         return;
       }
 
-      const [currentRun, currentTasks, currentEvents, budget] =
+      const [currentRun, currentTasks, budget] =
         await Promise.all([
           client.getRun(runId.trim()),
           client.listTasks(runId.trim()),
-          client.listEvents(runId.trim()),
           client.getBudget(runId.trim()),
         ]);
+      if (version !== refreshVersion.current) return;
       setRun(currentRun);
       setTasks(currentTasks);
-      setEvents(currentEvents);
       setCost(budget.spent_usd);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (version === refreshVersion.current) setError(err instanceof Error ? err.message : String(err));
     }
   }, [client, runId]);
 
   useEffect(() => {
     void refresh();
     const id = window.setInterval(() => void refresh(), 5000);
-    return () => window.clearInterval(id);
+    return () => { window.clearInterval(id); ++refreshVersion.current; };
   }, [refresh]);
+
+  useEffect(() => {
+    setRun(null);
+    setTasks([]);
+    setEvents([]);
+    setCost(0);
+    if (!runId.trim()) {
+      setStreamStatus("No run selected");
+      return;
+    }
+    const controller = new AbortController();
+    let cursor = 0;
+    let retryTimer: number | undefined;
+    async function follow() {
+      setStreamStatus("Connecting to audit stream…");
+      try {
+        for await (const event of client.streamEvents(runId.trim(), cursor, controller.signal)) {
+          if (controller.signal.aborted) return;
+          cursor = event.sequence;
+          setStreamStatus("Live audit stream");
+          setEvents((current) => [...current.filter((item) => item.event_id !== event.event_id), event].slice(-500));
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+      if (!controller.signal.aborted) {
+        setStreamStatus("Reconnecting to audit stream…");
+        retryTimer = window.setTimeout(() => void follow(), 3000);
+      }
+    }
+    void follow();
+    return () => { controller.abort(); window.clearTimeout(retryTimer); };
+  }, [client, runId]);
+
+  async function createRun() {
+    if (!repo.trim() || !objective.trim() || !Number.isFinite(Number(budget)) || Number(budget) <= 0) {
+      setError("Enter a repository, objective, and positive budget.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await client.createRun({ repo: repo.trim(), objective: objective.trim(), budget_usd: Number(budget), autonomy: "suggest" });
+      setRuns((current) => [created, ...current]);
+      setRunId(created.id);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally { setBusy(false); }
+  }
+
+  async function planRun() {
+    setBusy(true);
+    try {
+      setTasks(await client.planRun(repo.trim(), runId.trim()));
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally { setBusy(false); }
+  }
 
   async function searchRepository() {
     if (!repo.trim() || !query.trim()) return;
@@ -112,6 +183,10 @@ export function App() {
       </header>
 
       <div className="toolbar">
+        <select aria-label="Recent runs" value={runs.some((item) => item.id === runId) ? runId : ""} onChange={(event) => setRunId(event.target.value)}>
+          <option value="">Select a recent run</option>
+          {runs.map((item) => <option key={item.id} value={item.id}>{item.objective.slice(0, 70)} · {item.status}</option>)}
+        </select>
         <input
           aria-label="Run ID"
           value={runId}
@@ -137,6 +212,16 @@ export function App() {
       {error && <div className="error">{error}</div>}
 
       <div className="grid">
+        <Panel title="Create a run" className="objective">
+          <form onSubmit={(event) => { event.preventDefault(); void createRun(); }}>
+            <label>Repository path<input required value={repo} onChange={(event) => setRepo(event.target.value)} placeholder="/absolute/path/to/repository" /></label>
+            <label>Objective<input required value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="What should OpenForge work on?" /></label>
+            <label>Budget (USD)<input required type="number" min="0.01" step="0.01" value={budget} onChange={(event) => setBudget(event.target.value)} /></label>
+            <button disabled={busy} type="submit">{busy ? "Working…" : "Create run"}</button>
+            <button disabled={busy || !run || !repo.trim() || run.status !== "planning" || tasks.length > 0} type="button" onClick={() => void planRun()}>Plan selected run</button>
+            <p>Creates a suggestion-mode run. Planning uses your configured model and budget.</p>
+          </form>
+        </Panel>
         <Panel title="Objective" className="objective">
           {run ? (
             <>
@@ -225,6 +310,7 @@ export function App() {
         </Panel>
 
         <Panel title="Audit / History" className="events">
+          <p role="status">{streamStatus} · showing the latest 500 events</p>
           <div className="integrity">
             <strong>
               {integrity?.valid ? "Audit chain valid" : "Audit chain unverified"}

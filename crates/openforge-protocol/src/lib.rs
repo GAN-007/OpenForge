@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 pub mod ids;
 pub use ids::{
-    AgentInstanceId, ApprovalId, EventId, ModelInvocationId, ProjectId, RunId,
-    SecretLeaseId, SessionId, TaskId, ToolInvocationId,
+    AgentInstanceId, ApprovalId, EventId, ModelInvocationId, ProjectId, RunId, SecretLeaseId,
+    SessionId, TaskId, ToolInvocationId,
 };
 
 pub const PROTOCOL_VERSION: &str = "openforge.protocol.v2";
@@ -23,7 +23,9 @@ pub enum AutonomyLevel {
 }
 
 impl Default for AutonomyLevel {
-    fn default() -> Self { Self::Suggest }
+    fn default() -> Self {
+        Self::Suggest
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,8 +63,12 @@ pub struct Budget {
 }
 
 impl Budget {
-    pub fn remaining(&self) -> f64 { (self.hard_limit - self.spent).max(0.0) }
-    pub fn reserve(&self, amount: f64) -> bool { amount >= 0.0 && amount <= self.remaining() }
+    pub fn remaining(&self) -> f64 {
+        (self.hard_limit - self.spent).max(0.0)
+    }
+    pub fn reserve(&self, amount: f64) -> bool {
+        amount >= 0.0 && amount <= self.remaining()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,7 +184,9 @@ pub enum DataClassification {
 }
 
 impl Default for DataClassification {
-    fn default() -> Self { Self::Internal }
+    fn default() -> Self {
+        Self::Internal
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,7 +269,6 @@ pub struct CapabilitySet {
     pub server_version: String,
     pub capabilities: BTreeMap<String, bool>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {

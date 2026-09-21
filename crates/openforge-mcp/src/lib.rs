@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -9,7 +9,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    time::{timeout, Duration},
+    time::{Duration, timeout},
 };
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -178,11 +178,7 @@ impl McpStdioClient {
         serde_json::from_value(tools).context("invalid MCP tool list")
     }
 
-    pub async fn call_tool(
-        &mut self,
-        name: &str,
-        arguments: Value,
-    ) -> Result<McpToolCallResult> {
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<McpToolCallResult> {
         self.require_initialized()?;
         if name.trim().is_empty() {
             bail!("MCP tool name cannot be empty");
@@ -261,14 +257,10 @@ impl McpStdioClient {
                     continue;
                 }
                 if line.len() > self.max_response_bytes {
-                    bail!(
-                        "MCP response exceeded {} bytes",
-                        self.max_response_bytes
-                    );
+                    bail!("MCP response exceeded {} bytes", self.max_response_bytes);
                 }
 
-                let value: Value =
-                    serde_json::from_str(&line).context("invalid MCP JSON")?;
+                let value: Value = serde_json::from_str(&line).context("invalid MCP JSON")?;
                 if value.get("id").and_then(Value::as_u64) != Some(id) {
                     continue;
                 }

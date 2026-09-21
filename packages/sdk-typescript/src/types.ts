@@ -273,3 +273,19 @@ export interface PluginCapabilityDeclaration {
   values: string[];
 }
 
+
+export interface ModelSpec {
+  provider: string;
+  model: string;
+  family: string;
+  context_tokens: number;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_structured_output: boolean;
+  input_usd_per_million: number;
+  output_usd_per_million: number;
+  latency_score: number;
+  quality_score: number;
+  privacy_score: number;
+  max_data_classification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+}

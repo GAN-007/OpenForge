@@ -118,11 +118,7 @@ impl TelemetryRegistry {
             .observe(value);
     }
 
-    pub fn event(
-        &self,
-        name: impl Into<String>,
-        attributes: BTreeMap<String, Value>,
-    ) {
+    pub fn event(&self, name: impl Into<String>, attributes: BTreeMap<String, Value>) {
         let mut state = self.state.write().expect("telemetry lock poisoned");
         state.events.push(TelemetryEvent {
             timestamp: Utc::now(),
