@@ -7,14 +7,14 @@ import {
   type RepositoryIndex,
   type SearchHit,
 } from "@openforge/sdk";
-import { EmptyState, Panel } from "@openforge/ui";
+import { EmptyState, GatewaySettings, Panel } from "@openforge/ui";
 
 export function DesktopApp() {
   const [apiToken, setApiToken] = useState(
     () => window.sessionStorage.getItem("openforge.apiToken") ?? "",
   );
   const client = useMemo(
-    () => new OpenForgeClient("http://127.0.0.1:8765", apiToken || undefined),
+    () => new OpenForgeClient(import.meta.env.VITE_OPENFORGE_DAEMON_URL || "http://127.0.0.1:8765", apiToken || undefined),
     [apiToken],
   );
   const [caps, setCaps] = useState<CapabilitySet | null>(null);
@@ -43,7 +43,7 @@ export function DesktopApp() {
         setDaemon("offline");
         setError(failure instanceof Error ? failure.message : String(failure));
       });
-    void invoke<{ platform: string; arch: string }>("system_info").then(setSystem);
+    void invoke<{ platform: string; arch: string }>("system_info").then(setSystem).catch(() => setSystem(null));
   }, [client]);
 
   function persistToken(value: string) {
@@ -100,6 +100,9 @@ export function DesktopApp() {
       </nav>
 
       <section className="workspace">
+        <Panel title="Model connection" className="wide">
+          <GatewaySettings client={client} />
+        </Panel>
         <Panel title="Repository">
           <input
             value={repo}
@@ -136,7 +139,8 @@ export function DesktopApp() {
             type="password"
             value={apiToken}
             onChange={(event) => persistToken(event.target.value)}
-            placeholder="Optional API token (session only)"
+            aria-label="OpenForge daemon access token"
+            placeholder="Optional daemon access token (not the Sevi key)"
           />
         </Panel>
 

@@ -289,3 +289,11 @@ export interface ModelSpec {
   privacy_score: number;
   max_data_classification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
 }
+
+export interface GatewayStatus {
+  connected: boolean;
+  base_url: string;
+  model: string;
+  credential_storage: "daemon_memory";
+  pricing: "gateway_reported_or_unpriced";
+}

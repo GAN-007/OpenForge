@@ -77,6 +77,16 @@ class OpenForgeClient:
             raise OpenForgeError("daemon response has no result")
         return payload["result"]
 
+    async def gateway_status(self) -> dict[str, Any]:
+        return await self.rpc("gateway/status")
+
+    async def connect_gateway(self, api_key: str) -> dict[str, Any]:
+        """Test and use Sevi for this daemon session; the key is not persisted."""
+        return await self.rpc("gateway/connect", {"api_key": api_key})
+
+    async def disconnect_gateway(self) -> dict[str, Any]:
+        return await self.rpc("gateway/disconnect")
+
     async def list_models(self) -> list[dict[str, Any]]:
         return await self.rpc("model/list")
 

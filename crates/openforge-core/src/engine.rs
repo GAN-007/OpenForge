@@ -69,7 +69,7 @@ pub struct Engine {
         std::collections::HashMap<Uuid, Arc<tokio::sync::Mutex<AcpAgentClient>>>,
     >,
     fabric: Arc<dyn ModelProvider>,
-    provider_names: Vec<String>,
+    provider_override: std::sync::RwLock<Option<Arc<dyn ModelProvider>>>,
 }
 
 struct TaskExecution {
@@ -166,7 +166,6 @@ impl Engine {
         }
 
         let fabric_impl = Arc::new(FabricProvider::new(providers)?);
-        let provider_names = fabric_impl.provider_names();
         let fabric: Arc<dyn ModelProvider> = fabric_impl;
 
         let tool_bus = Arc::new(ToolBus::new(
@@ -180,16 +179,45 @@ impl Engine {
             tool_bus,
             acp_clients: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             fabric,
-            provider_names,
+            provider_override: std::sync::RwLock::new(None),
         })
     }
 
-    pub fn models(&self) -> &[openforge_protocol::ModelSpec] {
-        self.fabric.catalog()
+    /// Snapshot the provider so reconfiguration never invalidates an in-flight call.
+    pub fn model_provider(&self) -> Arc<dyn ModelProvider> {
+        self.provider_override
+            .read()
+            .expect("provider lock poisoned")
+            .as_ref()
+            .unwrap_or(&self.fabric)
+            .clone()
     }
 
-    pub fn providers(&self) -> &[String] {
-        &self.provider_names
+    pub fn set_provider_override(&self, provider: Option<Arc<dyn ModelProvider>>) {
+        *self
+            .provider_override
+            .write()
+            .expect("provider lock poisoned") = provider;
+    }
+
+    pub fn has_provider_override(&self) -> bool {
+        self.provider_override
+            .read()
+            .expect("provider lock poisoned")
+            .is_some()
+    }
+
+    pub fn models(&self) -> Vec<openforge_protocol::ModelSpec> {
+        self.model_provider().catalog().to_vec()
+    }
+
+    pub fn providers(&self) -> Vec<String> {
+        self.models()
+            .into_iter()
+            .map(|model| model.provider)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     pub async fn create_run(
@@ -300,9 +328,10 @@ impl Engine {
             response_schema: None,
         };
 
+        let fabric = self.model_provider();
         let router = ModelRouter::default();
-        let model = router.select(self.fabric.catalog(), &request.requirements, 20_000, 4_000)?;
-        let response = self.fabric.invoke(model, &request).await?;
+        let model = router.select(fabric.catalog(), &request.requirements, 20_000, 4_000)?;
+        let response = fabric.invoke(model, &request).await?;
 
         self.store.record_cost(CostRecord {
             run_id: run.id,
@@ -705,14 +734,15 @@ impl Engine {
             response_schema: None,
         };
 
+        let fabric = self.model_provider();
         let router = ModelRouter::default();
         let model = router.select(
-            self.fabric.catalog(),
+            fabric.catalog(),
             &request.requirements,
             6_000,
             max_output_tokens as u64,
         )?;
-        let response = self.fabric.invoke(model, &request).await?;
+        let response = fabric.invoke(model, &request).await?;
 
         self.store.record_cost(CostRecord {
             run_id,
@@ -819,7 +849,7 @@ impl Engine {
         )?);
         let agent = AgentLoop {
             store: self.store.clone(),
-            provider: self.fabric.clone(),
+            provider: self.model_provider(),
             router: ModelRouter::default(),
             sandbox: backend.clone(),
             tools: tools.clone(),

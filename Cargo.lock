@@ -1112,6 +1112,7 @@ dependencies = [
  "openforge-cost",
  "openforge-events",
  "openforge-mcp",
+ "openforge-models",
  "openforge-plugins",
  "openforge-policy",
  "openforge-protocol",

@@ -14,14 +14,14 @@ import {
   type TaskNode,
   type TelemetrySnapshot,
 } from "@openforge/sdk";
-import { EmptyState, Panel, StatusPill } from "@openforge/ui";
+import { EmptyState, GatewaySettings, Panel, StatusPill } from "@openforge/ui";
 
 export function App() {
   const [apiToken, setApiToken] = useState(
     () => window.sessionStorage.getItem("openforge.apiToken") ?? "",
   );
   const client = useMemo(
-    () => new OpenForgeClient("http://127.0.0.1:8765", apiToken || undefined),
+    () => new OpenForgeClient(import.meta.env.VITE_OPENFORGE_DAEMON_URL || "http://127.0.0.1:8765", apiToken || undefined),
     [apiToken],
   );
   const [runs, setRuns] = useState<Run[]>([]);
@@ -194,11 +194,11 @@ export function App() {
           placeholder="Paste a run UUID"
         />
         <input
-          aria-label="API token"
+          aria-label="OpenForge daemon access token"
           type="password"
           value={apiToken}
           onChange={(event) => persistToken(event.target.value)}
-          placeholder="Optional API token (session only)"
+          placeholder="Optional daemon access token (not the Sevi key)"
         />
         <button onClick={() => void refresh()}>Refresh</button>
         {run && (
@@ -210,6 +210,10 @@ export function App() {
       </div>
 
       {error && <div className="error">{error}</div>}
+
+      <Panel title="Model connection">
+        <GatewaySettings client={client} />
+      </Panel>
 
       <div className="grid">
         <Panel title="Create a run" className="objective">

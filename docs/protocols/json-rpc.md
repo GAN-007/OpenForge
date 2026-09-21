@@ -14,6 +14,7 @@ Call `initialize` to discover protocol/server versions and capabilities. Optiona
 
 | Domain | Implemented methods |
 | --- | --- |
+| gateway | `gateway/status`, `gateway/connect`, `gateway/disconnect` (session-only [Sevi setup](../providers/sevi.md)) |
 | initialize | `initialize` |
 | run | `run/create`, `run/plan`, `run/execute`, `run/list`, `run/get` |
 | task | `task/list` |

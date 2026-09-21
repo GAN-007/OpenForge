@@ -368,6 +368,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_setup_requires_daemon_authentication() {
+        let (_dir, state, _) = fixture();
+        let app = Router::new()
+            .route("/v1/rpc", post(crate::rpc))
+            .with_state(state);
+        let request = Request::builder().method("POST").uri("/v1/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"jsonrpc":"2.0","id":1,"method":"gateway/connect","params":{"api_key":"test-key"}}).to_string())).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), 10000).await.unwrap();
+        assert!(
+            !String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("test-key")
+        );
+    }
+
+    #[tokio::test]
     async fn rest_requires_auth_and_lists_persisted_runs() {
         let (_dir, state, id) = fixture();
         let app = routes().with_state(state);

@@ -87,6 +87,10 @@ python -m pip install -e "python[dev]"
 pytest python/tests
 ```
 
+## Sevi gateway setup
+
+In the web or desktop app, open **Model connection → Sevi model gateway**, paste your key, and select **Test & connect**. The preset uses `https://model.sevi.io/cursor` and `auto-select`. The key stays in daemon memory. See [setup and usage limits](docs/providers/sevi.md).
+
 ## Engineering flow
 
 A run is pinned to an immutable base SHA. The planner produces a validated DAG. Runnable independent tasks start from the same accepted integration SHA and execute in separate task worktrees. Successful tasks must satisfy their acceptance commands before they can produce a commit. The merge coordinator cherry-picks accepted task commits into `of/integration/<run-id>`, reruns the relevant acceptance checks against the combined state, and records every step in the event ledger.

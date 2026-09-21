@@ -2,6 +2,10 @@
 
 OpenForge routes by declared model capabilities rather than hard-coding one vendor.
 
+## Sevi gateway
+
+The web and desktop GUIs support [Sevi gateway setup](sevi.md) with a session-only API key and the `auto-select` model. No Cursor client is required.
+
 ## Provider kinds
 
 ### `openai-compatible`

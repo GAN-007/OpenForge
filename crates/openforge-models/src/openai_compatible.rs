@@ -7,13 +7,25 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     pub provider_name: String,
     pub base_url: String,
     pub api_key: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     pub models: Vec<ModelSpec>,
+}
+
+impl std::fmt::Debug for OpenAiCompatibleConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiCompatibleConfig")
+            .field("provider_name", &self.provider_name)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("extra_headers", &"[REDACTED]")
+            .field("models", &self.models)
+            .finish()
+    }
 }
 
 pub struct OpenAiCompatibleProvider {
@@ -88,9 +100,19 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let started = Instant::now();
         let response = rb.send().await.context("model request failed")?;
         let status = response.status();
+        let reported_cost = response
+            .headers()
+            .get("x-litellm-response-cost")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0);
         let raw = response.text().await.context("read model response")?;
         if !status.is_success() {
-            anyhow::bail!("provider {} returned {}: {}", self.name(), status, raw)
+            anyhow::bail!(
+                "provider {} returned HTTP {}. Check the API key, model access and gateway quota.",
+                self.name(),
+                status
+            )
         }
         let parsed: CompletionResponse =
             serde_json::from_str(&raw).context("parse OpenAI-compatible response")?;
@@ -110,7 +132,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
             input_tokens: input,
             output_tokens: output,
             latency_ms: started.elapsed().as_millis() as u64,
-            cost_usd: cost,
+            cost_usd: reported_cost.unwrap_or(cost),
             provider_request_id: parsed.id,
         })
     }
