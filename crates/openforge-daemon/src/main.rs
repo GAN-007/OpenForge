@@ -782,6 +782,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 run_id,
                 estimated,
                 limits.per_run,
+                limits.daily,
             )?;
             Ok(json!({
                 "reservation_id": reservation_id,

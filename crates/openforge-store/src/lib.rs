@@ -639,8 +639,14 @@ impl Store {
         run_id: Uuid,
         estimated: f64,
         hard_limit: f64,
+        daily_limit: f64,
     ) -> Result<Uuid> {
-        if !estimated.is_finite() || estimated < 0.0 || !hard_limit.is_finite() || hard_limit < 0.0
+        if !estimated.is_finite()
+            || estimated < 0.0
+            || !hard_limit.is_finite()
+            || hard_limit < 0.0
+            || !daily_limit.is_finite()
+            || daily_limit < 0.0
         {
             anyhow::bail!("invalid budget reservation");
         }
@@ -666,6 +672,39 @@ impl Store {
         if spent + settled + reserved + estimated > hard_limit + f64::EPSILON {
             anyhow::bail!("budget reservation would exceed run hard limit");
         }
+
+        let day_start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .context("failed to build start-of-day timestamp")?
+            .and_utc()
+            .to_rfc3339();
+        let daily_spent: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(amount_usd),0)
+             FROM cost_ledger WHERE created_at>=?1",
+            [&day_start],
+            |row| row.get(0),
+        )?;
+        let daily_reserved: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0)
+             FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NULL",
+            [&day_start],
+            |row| row.get(0),
+        )?;
+        let daily_settled: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0)
+             FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NOT NULL",
+            [&day_start],
+            |row| row.get(0),
+        )?;
+        if daily_spent + daily_settled + daily_reserved + estimated
+            > daily_limit + f64::EPSILON
+        {
+            anyhow::bail!("budget reservation would exceed daily hard limit");
+        }
+
         let reservation_id = Uuid::now_v7();
         tx.execute(
             "INSERT INTO budget_reservations(
@@ -762,6 +801,45 @@ impl Store {
         if spent + settled + pending + actual > run.budget.hard_limit + f64::EPSILON {
             anyhow::bail!("budget settlement would exceed run hard limit");
         }
+
+        let daily_limit: f64 = tx
+            .query_row(
+                "SELECT daily FROM budget_limits WHERE run_id=?1",
+                [reservation.run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| run.budget.hard_limit.max(100.0));
+        let day_start = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .context("failed to build start-of-day timestamp")?
+            .and_utc()
+            .to_rfc3339();
+        let daily_spent: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(amount_usd),0)
+             FROM cost_ledger WHERE created_at>=?1",
+            [&day_start],
+            |row| row.get(0),
+        )?;
+        let daily_settled: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(actual_usd),0)
+             FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NOT NULL",
+            [&day_start],
+            |row| row.get(0),
+        )?;
+        let daily_pending: f64 = tx.query_row(
+            "SELECT COALESCE(SUM(estimated_usd),0)
+             FROM budget_reservations
+             WHERE created_at>=?1 AND settled_at IS NULL AND reservation_id<>?2",
+            params![day_start, reservation_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if daily_spent + daily_settled + daily_pending + actual > daily_limit + f64::EPSILON {
+            anyhow::bail!("budget settlement would exceed daily hard limit");
+        }
+
         let settled_at = Utc::now();
         let changed = tx.execute(
             "UPDATE budget_reservations SET actual_usd=?2,settled_at=?3
@@ -1005,6 +1083,61 @@ mod tests {
             Some(first.event_hash.as_str())
         );
         assert_ne!(first.event_hash, second.event_hash);
+    }
+
+
+    #[test]
+    fn budget_reservations_enforce_daily_limit_transactionally() {
+        fn run(id: Uuid, hard_limit: f64) -> Run {
+            let now = Utc::now();
+            Run {
+                id,
+                project_id: Uuid::new_v4(),
+                objective: "test budget".into(),
+                base_sha: "deadbeef".into(),
+                status: RunStatus::Planning,
+                autonomy: openforge_protocol::AutonomyLevel::Suggest,
+                budget: openforge_protocol::Budget {
+                    currency: "USD".into(),
+                    soft_limit: None,
+                    hard_limit,
+                    spent: 0.0,
+                },
+                created_at: now,
+                updated_at: now,
+            }
+        }
+
+        let store = Store::in_memory().unwrap();
+        let first = run(Uuid::new_v4(), 20.0);
+        let second = run(Uuid::new_v4(), 20.0);
+        store.create_run(&first).unwrap();
+        store.create_run(&second).unwrap();
+
+        let limits = BudgetLimitsRecord {
+            per_call: 5.0,
+            per_task: 5.0,
+            per_run: 20.0,
+            daily: 5.0,
+        };
+        store.set_budget_limits(first.id, &limits).unwrap();
+        store.set_budget_limits(second.id, &limits).unwrap();
+
+        let first_reservation = store
+            .register_budget_reservation(first.id, 3.0, 20.0, 5.0)
+            .unwrap();
+        let error = store
+            .register_budget_reservation(second.id, 3.0, 20.0, 5.0)
+            .unwrap_err();
+        assert!(error.to_string().contains("daily hard limit"));
+
+        store
+            .register_budget_reservation(second.id, 2.0, 20.0, 5.0)
+            .unwrap();
+        let error = store
+            .record_settled_cost(first_reservation, 4.0)
+            .unwrap_err();
+        assert!(error.to_string().contains("daily hard limit"));
     }
 
     #[test]
