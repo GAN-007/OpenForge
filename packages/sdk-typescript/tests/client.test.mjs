@@ -49,3 +49,41 @@ test('stream surfaces server errors', async (t) => {
     for await (const _ of new OpenForgeClient().streamEvents('run')) { /* consume */ }
   }, /storage unavailable/);
 });
+
+test('runtime methods preserve policy paths, IDs and streamed payloads', async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const request = JSON.parse(init.body);
+    calls.push([request.method, request.params]);
+    return Response.json({ jsonrpc: '2.0', id: request.id, result: {} });
+  });
+  const client = new OpenForgeClient();
+  await client.leaseSecret({ secret_name: 'TEST', audience: 'worker', policy_path: '/policy' });
+  await client.revokeSecret('lease');
+  await client.acpRequest('process', 'echo', { text: 'ok' });
+  await client.mcpCallTool('server', 'echo', { text: 'ok' }, '/policy');
+  await client.mcpListTools('server', '/policy');
+  await client.mcpListResources('server', '/policy');
+  await client.mcpReadResource('server', 'test://value', '/policy');
+  await client.mcpListPrompts('server', '/policy');
+  await client.budgetReserve('run', .1);
+  await client.budgetSettle('reservation', .05);
+  await client.artifactStreamChunk('upload', 'YQ==');
+  await client.artifactStreamCommit('upload', { source: 'test' });
+  await client.validatePluginCapability('dev.test.plugin', 'browser:navigate');
+  assert.deepEqual(calls, [
+    ['secret/lease', { secret_name: 'TEST', audience: 'worker', policy_path: '/policy' }],
+    ['secret/revoke', { lease_id: 'lease' }],
+    ['acp/request', { process_id: 'process', method: 'echo', params: { text: 'ok' } }],
+    ['mcp/call_tool', { server_name: 'server', tool_name: 'echo', arguments: { text: 'ok' }, policy_path: '/policy' }],
+    ['mcp/list_tools', { server_name: 'server', policy_path: '/policy' }],
+    ['mcp/list_resources', { server_name: 'server', policy_path: '/policy' }],
+    ['mcp/read_resource', { server_name: 'server', uri: 'test://value', policy_path: '/policy' }],
+    ['mcp/list_prompts', { server_name: 'server', policy_path: '/policy' }],
+    ['budget/reserve', { run_id: 'run', estimated_usd: .1 }],
+    ['budget/settle', { reservation_id: 'reservation', actual_usd: .05 }],
+    ['artifact/stream/chunk', { upload_id: 'upload', base64: 'YQ==' }],
+    ['artifact/stream/commit', { upload_id: 'upload', metadata: { source: 'test' } }],
+    ['plugins/capability/validate', { plugin_id: 'dev.test.plugin', capability: 'browser:navigate' }],
+  ]);
+});

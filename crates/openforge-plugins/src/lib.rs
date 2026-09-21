@@ -16,6 +16,7 @@ pub enum PluginRuntime {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PluginCapabilities {
     #[serde(default)]
     pub filesystem: Vec<String>,
@@ -42,6 +43,7 @@ pub struct PluginCapabilities {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     pub schema: String,
     pub id: String,
@@ -68,14 +70,45 @@ impl PluginManifest {
         if self.schema != "openforge.plugin/v2" {
             bail!("unsupported plugin schema {}", self.schema);
         }
-        if self.id.split('.').count() < 3 {
+        let segments: Vec<_> = self.id.split('.').collect();
+        if segments.len() < 3
+            || segments.iter().enumerate().any(|(index, segment)| {
+                segment.is_empty()
+                    || !segment.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || (index > 0 && byte == b'-')
+                    })
+            })
+        {
             bail!("plugin id must be reverse-DNS");
         }
         if self.version.trim().is_empty() || self.entrypoint.trim().is_empty() {
             bail!("plugin version and entrypoint are required");
         }
+        for domain in [
+            "filesystem",
+            "network",
+            "secrets",
+            "database",
+            "shell",
+            "mcp",
+            "acp",
+            "cloud",
+            "deployment",
+            "browser",
+            "git",
+        ] {
+            let mut seen = std::collections::BTreeSet::new();
+            for value in capability_values(&self.capabilities, domain).expect("known domain") {
+                if value.trim().is_empty() || !seen.insert(value) {
+                    bail!("empty or duplicate plugin capability in {domain}");
+                }
+            }
+        }
         let entrypoint = Path::new(&self.entrypoint);
-        if entrypoint.is_absolute()
+        if self.entrypoint.contains('\\')
+            || entrypoint.is_absolute()
             || entrypoint.components().any(|component| {
                 matches!(
                     component,
@@ -171,6 +204,9 @@ impl PluginHost {
                         canonical.display(),
                         self.repository_root.display()
                     );
+                }
+                if !canonical.is_file() {
+                    bail!("plugin entrypoint must be a file");
                 }
                 return Ok(canonical);
             }
@@ -289,4 +325,85 @@ fn capability_values<'a>(
 pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
     let bytes = fs::read(path)?;
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn manifest() -> serde_json::Value {
+        json!({"schema":"openforge.plugin/v2","id":"dev.test.plugin","version":"1.0.0",
+            "runtime":"process","entrypoint":"entry.js","api":">=0.2 <1.0","capabilities":{"browser":["navigate"]}})
+    }
+
+    #[test]
+    fn rejects_invalid_ids_duplicate_capabilities_and_unknown_domains() {
+        for id in ["..", "dev..plugin", "dev.Test.plugin", "dev/test.plugin.id"] {
+            let mut value = manifest();
+            value["id"] = json!(id);
+            assert!(
+                serde_json::from_value::<PluginManifest>(value)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut value = manifest();
+        value["capabilities"]["browser"] = json!(["navigate", "navigate"]);
+        assert!(
+            serde_json::from_value::<PluginManifest>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let mut value = manifest();
+        value["capabilities"]["typo"] = json!(["read"]);
+        assert!(serde_json::from_value::<PluginManifest>(value).is_err());
+    }
+
+    #[test]
+    fn nested_manifest_directory_need_not_equal_plugin_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("plugins/builtin/example");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("plugin.json"), manifest().to_string()).unwrap();
+        fs::write(plugin.join("entry.js"), "export {};").unwrap();
+        let host = PluginHost::open(dir.path().join("plugins")).unwrap();
+        assert_eq!(host.list().len(), 1);
+        assert_eq!(
+            host.entrypoint("dev.test.plugin").unwrap(),
+            plugin.join("entry.js").canonicalize().unwrap()
+        );
+        assert!(
+            host.validate_capability("dev.test.plugin", "browser:navigate")
+                .is_ok()
+        );
+        assert!(
+            host.validate_capability("dev.test.plugin", "browser:delete")
+                .is_err()
+        );
+        fs::create_dir_all(dir.path().join("plugins/duplicate")).unwrap();
+        fs::write(
+            dir.path().join("plugins/duplicate/plugin.json"),
+            manifest().to_string(),
+        )
+        .unwrap();
+        assert!(PluginHost::open(dir.path().join("plugins")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn entrypoint_symlinks_cannot_escape_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let plugin = dir.path().join("plugins/example");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("plugin.json"), manifest().to_string()).unwrap();
+        fs::write(outside.path().join("entry.js"), "export {};").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("entry.js"), plugin.join("entry.js"))
+            .unwrap();
+        let host = PluginHost::open(dir.path().join("plugins")).unwrap();
+        assert!(host.entrypoint("dev.test.plugin").is_err());
+    }
 }

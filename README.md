@@ -27,6 +27,10 @@ The default development policy denies common secret paths, host Git metadata, pr
 
 ## Quick start
 
+Run `./setup.sh` to install missing local dependencies, build OpenForge, and choose terminal, IDE, native GUI, or browser. Use `./setup.sh --check` for a read-only prerequisite report. See [installation and interface selection](docs/setup.md).
+
+The CLI now connects to the shared daemon by default, including the Sevi connection entered in the GUI. Start the daemon first (or use setup); pass `--standalone` to retain direct-engine operation.
+
 Requirements:
 
 - Rust 1.88 or newer;

@@ -1004,10 +1004,12 @@ name = "openforge"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "openforge-core",
  "openforge-policy",
  "openforge-protocol",
+ "reqwest",
  "serde_json",
  "tokio",
  "uuid",
@@ -1033,6 +1035,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "uuid",
 ]
 
@@ -1189,6 +1192,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
