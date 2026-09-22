@@ -107,11 +107,7 @@ impl Editor {
                 cursor::MoveToColumn(0),
                 terminal::Clear(ClearType::FromCursorDown)
             )?;
-            let before = render_fragment(
-                &input[..position],
-                width.saturating_sub(12),
-                true,
-            );
+            let before = render_fragment(&input[..position], width.saturating_sub(12), true);
             let after = render_fragment(
                 &input[position..],
                 width.saturating_sub(12 + before.chars().count()),
@@ -255,9 +251,7 @@ fn normalize_paste(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .chars()
-        .filter(|character| {
-            !character.is_control() || matches!(character, '\n' | '\t')
-        })
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
         .collect()
 }
 

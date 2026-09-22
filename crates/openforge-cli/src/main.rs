@@ -903,12 +903,7 @@ async fn session_command(
     let argument = argument.trim();
     let accepts_argument = matches!(
         command,
-        "/permissions"
-            | "/approvals"
-            | "/mode"
-            | "/budget"
-            | "/resume"
-            | "/mcp"
+        "/permissions" | "/approvals" | "/mode" | "/budget" | "/resume" | "/mcp"
     );
     if !argument.is_empty() && command.starts_with('/') && !accepts_argument {
         bail!("{command} does not accept arguments");
