@@ -587,13 +587,28 @@ async fn chat(
             }
             continue;
         }
-        match input {
+        match input.trim_end_matches(['.', '!', '?']) {
+            "whoami" | "/whoami" => {
+                match ProcessCommand::new("id").arg("-un").output() {
+                    Ok(output) if output.status.success() => {
+                        print!("{}", String::from_utf8_lossy(&output.stdout))
+                    }
+                    _ => eprintln!("Could not determine the current operating-system user"),
+                }
+                continue;
+            }
+            "pwd" | "/pwd" => {
+                println!("{}", repo.display());
+                continue;
+            }
             "/exit" | "/quit" => break,
             "/help" => {
                 println!("/help        show terminal commands");
                 println!(
                     "/files       list workspace files/folders locally without a model request"
                 );
+                println!("whoami      show the local operating-system user (no model call)");
+                println!("pwd         show the selected workspace (no model call)");
                 println!("/gateway     show the shared Sevi gateway status");
                 println!("/connect     enter your Sevi key without echoing it");
                 println!("/disconnect  disconnect the shared Sevi provider");
@@ -736,8 +751,23 @@ fn is_file_listing(input: &str) -> bool {
         .join(" ")
         .to_ascii_lowercase();
     matches!(
-        normalized.trim_end_matches(['.', '!']),
-        "/files" | "/tree" | "list all files and folders" | "list files and folders"
+        normalized.trim_end_matches(['.', '!', '?']),
+        "/files"
+            | "/tree"
+            | "ls"
+            | "ls -a"
+            | "ls -all"
+            | "ls -la"
+            | "list all files and folders"
+            | "list files and folders"
+            | "list all files"
+            | "list files"
+            | "list all files in this folder"
+            | "list files in this folder"
+            | "list all files in this directory"
+            | "list files in this directory"
+            | "list all files and folders in this folder"
+            | "list all files and folders in this directory"
     )
 }
 

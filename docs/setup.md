@@ -73,3 +73,7 @@ The script installs the dependencies needed for local interfaces. Docker, Kubern
 ## Automation
 
 See [GitHub and MCP extensions](automation.md) for connecting GitHub, discovering tools and adding other automation servers.
+
+Local terminal requests `list all files in this folder`, `ls`, `/files`, `whoami`, and `pwd` do not create runs or call a model. Listing aliases use OpenForge's ignore-aware recursive listing, not shell `ls` formatting. Arbitrary shell syntax is not executed by these aliases.
+
+For model-driven objectives, planner cost estimates determine proportional shares of the remaining user-selected run budget after planning costs. A single task can use that remaining budget instead of being capped by an arbitrarily small model estimate. The run's dollar limit and reported provider charges still apply; Sevi is not guaranteed to be free.
