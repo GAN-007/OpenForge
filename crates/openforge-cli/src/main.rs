@@ -1,6 +1,7 @@
 mod session;
 mod terminal;
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand, ValueEnum};
 use openforge_core::{Engine, OpenForgeConfig, RunnerBackend};
 use openforge_policy::AgentPolicy;
@@ -714,8 +715,27 @@ async fn chat(
         let outcome: Result<String> = async {
             let request = if input == "/review" {
                 format!("Review the following tracked changes for bugs and regressions. Report findings with file references. Do not modify files or execute commands. This is read-only reporting: use empty acceptance checks.\n{}", workspace_diff(&repo, session.last_run)?)
-            } else { input.to_owned() };
+            } else if let Some(inline_plan) = input.strip_prefix("/plan ") {
+                inline_plan.to_owned()
+            } else {
+                input.to_owned()
+            };
             let mut objective = conversation_objective(&session.transcript, &request);
+            if let Some(goal) = session.goal.as_deref().filter(|_| !session.goal_paused) {
+                objective.push_str("\n\nPERSISTENT GOAL\n");
+                objective.push_str(goal);
+            }
+            if let Some(personality) = session.personality.as_deref() {
+                if personality != "none" {
+                    objective.push_str("\n\nRESPONSE STYLE\n");
+                    objective.push_str(match personality {
+                        "friendly" => "Be warm, clear, and collaborative while remaining technically precise.",
+                        "pragmatic" => "Be concise, implementation-focused, and explicit about tradeoffs and verification.",
+                        _ => "",
+                    });
+                }
+            }
+            append_mentions(&mut objective, &session)?;
             let instructions = repo.join("AGENTS.md");
             if instructions.exists() {
                 let canonical = instructions.canonicalize()?;
@@ -903,7 +923,20 @@ async fn session_command(
     let argument = argument.trim();
     let accepts_argument = matches!(
         command,
-        "/permissions" | "/approvals" | "/mode" | "/budget" | "/resume" | "/mcp"
+        "/permissions"
+            | "/approvals"
+            | "/mode"
+            | "/budget"
+            | "/resume"
+            | "/mcp"
+            | "/plan"
+            | "/goal"
+            | "/personality"
+            | "/mention"
+            | "/rename"
+            | "/memories"
+            | "/skills"
+            | "/stop"
     );
     if !argument.is_empty() && command.starts_with('/') && !accepts_argument {
         bail!("{command} does not accept arguments");
@@ -912,12 +945,16 @@ async fn session_command(
         "/" | "/help" => terminal::help(),
         "/status" => {
             println!(
-                "session: {}\nworkspace: {}\nmode: {}\nbudget: USD {:.2}\npolicy: {}",
+                "session: {}\ntitle: {}\nworkspace: {}\nmode: {}\nbudget: USD {:.2}\npolicy: {}\ngoal: {}\npersonality: {}\nmentioned files: {}",
                 session.id,
+                session.title.as_deref().unwrap_or("untitled"),
                 session.workspace.display(),
                 mode.as_str(),
                 budget,
-                policy.display()
+                policy.display(),
+                session.goal.as_deref().unwrap_or("none"),
+                session.personality.as_deref().unwrap_or("none"),
+                session.mentions.len()
             );
             if let Some(id) = session.last_run {
                 print_json(&daemon.rpc("run/get", json!({"run_id": id})).await?)?;
@@ -943,9 +980,13 @@ async fn session_command(
         }
         "/plan" => {
             *mode = Mode::Suggest;
-            println!(
-                "Planning mode: objectives create plans without execution. Use /mode execute to execute future objectives."
-            );
+            if argument.is_empty() {
+                println!(
+                    "Planning mode: objectives create plans without execution. Use /mode execute to execute future objectives."
+                );
+            } else {
+                return Ok(false);
+            }
         }
         "/mode" => {
             if !argument.is_empty() {
@@ -967,6 +1008,86 @@ async fn session_command(
                 *budget = value;
             }
             println!("Next-turn run budget: USD {budget:.2}");
+        }
+        "/goal" => {
+            match argument {
+                "" => println!(
+                    "Goal: {}{}",
+                    session.goal.as_deref().unwrap_or("none"),
+                    if session.goal_paused { " (paused)" } else { "" }
+                ),
+                "clear" => {
+                    session.goal = None;
+                    session.goal_paused = false;
+                    println!("Persistent goal cleared");
+                }
+                "pause" => {
+                    session.goal.as_ref().context("No goal is set")?;
+                    session.goal_paused = true;
+                    println!("Persistent goal paused");
+                }
+                "resume" => {
+                    session.goal.as_ref().context("No goal is set")?;
+                    session.goal_paused = false;
+                    println!("Persistent goal resumed");
+                }
+                value => {
+                    let value = value.strip_prefix("edit ").unwrap_or(value).trim();
+                    if value.is_empty() || value.chars().count() > 4000 {
+                        bail!("goal must contain 1 to 4000 characters");
+                    }
+                    session.goal = Some(value.to_string());
+                    session.goal_paused = false;
+                    println!("Persistent goal set");
+                }
+            }
+            session.save(root)?;
+        }
+        "/personality" => {
+            if argument.is_empty() {
+                println!(
+                    "Personality: {}",
+                    session.personality.as_deref().unwrap_or("none")
+                );
+            } else {
+                match argument {
+                    "friendly" | "pragmatic" | "none" => {
+                        session.personality = Some(argument.to_string());
+                        session.save(root)?;
+                        println!("Personality: {argument}");
+                    }
+                    _ => bail!("use /personality friendly|pragmatic|none"),
+                }
+            }
+        }
+        "/mention" => {
+            if argument == "clear" {
+                session.mentions.clear();
+                session.save(root)?;
+                println!("Mentioned files cleared");
+            } else if argument.is_empty() {
+                for path in &session.mentions {
+                    println!("{}", path.display());
+                }
+                if session.mentions.is_empty() {
+                    println!("No files are attached to future objectives");
+                }
+            } else {
+                let relative = validate_mentioned_file(&session.workspace, argument)?;
+                if !session.mentions.contains(&relative) {
+                    session.mentions.push(relative.clone());
+                }
+                session.save(root)?;
+                println!("Attached {}", relative.display());
+            }
+        }
+        "/rename" => {
+            if argument.is_empty() || argument.chars().count() > 120 {
+                bail!("use /rename TITLE (1 to 120 characters)");
+            }
+            session.title = Some(argument.to_string());
+            session.save(root)?;
+            println!("Session renamed: {argument}");
         }
         "/diff" => println!("{}", workspace_diff(&session.workspace, session.last_run)?),
         "/init" => {
@@ -990,6 +1111,24 @@ async fn session_command(
             session.id = Uuid::new_v4();
             session.save(root)?;
             println!("Forked session: {}", session.id);
+        }
+        "/archive" => {
+            let workspace = session.workspace.clone();
+            let archived = session.archive(root)?;
+            *session = session::Session::new(&workspace);
+            session.save(root)?;
+            println!(
+                "Archived session to {}. New session: {}",
+                archived.display(),
+                session.id
+            );
+        }
+        "/delete" => {
+            let workspace = session.workspace.clone();
+            let deleted = session.delete(root)?;
+            *session = session::Session::new(&workspace);
+            session.save(root)?;
+            println!("Deleted previous session: {deleted}. New session: {}", session.id);
         }
         "/resume" => {
             if argument.is_empty() {
@@ -1018,18 +1157,94 @@ async fn session_command(
                 session.transcript.len()
             );
         }
-        "/mcp" => {
-            let (method, params) = if argument.is_empty() {
-                ("mcp/list_servers", json!({}))
-            } else {
-                (
-                    "mcp/list_tools",
-                    json!({"server_name": argument, "policy_path": canonical_policy(policy)?}),
-                )
-            };
-            print_json(&daemon.rpc(method, params).await?)?;
+        "/copy" => {
+            let output = session.latest_output().context("No completed OpenForge output to copy")?;
+            print!("\x1b]52;c;{}\x07", BASE64.encode(output.as_bytes()));
+            io::stdout().flush()?;
+            println!("\nLatest OpenForge output sent to the terminal clipboard");
         }
-        "/apps" => print_json(&daemon.rpc("plugins/list", json!({})).await?)?,
+        "/memories" => {
+            let query = if argument == "all" { "" } else { argument };
+            print_json(
+                &daemon
+                    .rpc(
+                        "memory/search",
+                        json!({"scope":"repository","query":query,"limit":100}),
+                    )
+                    .await?,
+            )?;
+        }
+        "/skills" => {
+            let skills = workspace_skills(&session.workspace, argument)?;
+            if skills.is_empty() {
+                println!("No matching SKILL.md files found in the workspace");
+            } else {
+                for skill in skills {
+                    println!("{skill}");
+                }
+            }
+        }
+        "/mcp" => {
+            if argument == "verbose" {
+                let servers = daemon.rpc("mcp/list_servers", json!({})).await?;
+                print_json(&servers)?;
+                for server in servers.as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    println!("MCP server: {server}");
+                    print_json(
+                        &daemon
+                            .rpc(
+                                "mcp/list_tools",
+                                json!({"server_name":server,"policy_path":canonical_policy(policy)?}),
+                            )
+                            .await?,
+                    )?;
+                }
+            } else {
+                let (method, params) = if argument.is_empty() {
+                    ("mcp/list_servers", json!({}))
+                } else {
+                    (
+                        "mcp/list_tools",
+                        json!({"server_name": argument, "policy_path": canonical_policy(policy)?}),
+                    )
+                };
+                print_json(&daemon.rpc(method, params).await?)?;
+            }
+        }
+        "/apps" | "/plugins" => {
+            print_json(&daemon.rpc("plugins/list", json!({})).await?)?
+        }
+        "/agent" | "/subagents" => {
+            if let Some(id) = session.last_run {
+                println!("Run task agents:");
+                print_json(&daemon.rpc("task/list", json!({"run_id":id})).await?)?;
+            }
+            println!("ACP agent processes:");
+            print_json(&daemon.rpc("acp/list", json!({})).await?)?;
+        }
+        "/ps" => print_json(&daemon.rpc("acp/list", json!({})).await?)?,
+        "/stop" => {
+            if argument.is_empty() {
+                bail!("use /stop PROCESS_UUID|all");
+            }
+            if argument == "all" {
+                let processes = daemon.rpc("acp/list", json!({})).await?;
+                let ids: Vec<String> = processes
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|process| process["process_id"].as_str())
+                    .map(str::to_string)
+                    .collect();
+                for process_id in ids {
+                    let _ = daemon.rpc("acp/close", json!({"process_id":process_id})).await?;
+                }
+                println!("Stopped all ACP processes");
+            } else {
+                let process_id = Uuid::parse_str(argument).context("use /stop PROCESS_UUID|all")?;
+                print_json(&daemon.rpc("acp/close", json!({"process_id":process_id})).await?)?;
+            }
+        }
         "/runs" => print_json(&daemon.rpc("run/list", json!({"limit":20})).await?)?,
         "/tasks" | "/events" => {
             let id = session.last_run.context("No run in this session yet")?;
@@ -1046,6 +1261,22 @@ async fn session_command(
                     .await?,
             )?;
         }
+        "/usage" => {
+            let id = session.last_run.context("No run in this session yet")?;
+            print_json(&daemon.rpc("budget/snapshot", json!({"run_id":id})).await?)?;
+        }
+        "/debug-config" => {
+            print_json(&json!({
+                "initialize": daemon.rpc("initialize", json!({})).await?,
+                "gateway": daemon.rpc("gateway/status", json!({})).await?,
+                "models": daemon.rpc("model/list", json!({})).await?,
+                "policy_path": canonical_policy(policy)?,
+                "policy": AgentPolicy::from_yaml(&*policy)?
+            }))?;
+        }
+        "/logout" => {
+            print_json(&daemon.rpc("gateway/disconnect", json!({})).await?)?;
+        }
         "/clear" => {
             session.transcript.clear();
             session.save(root)?;
@@ -1061,6 +1292,68 @@ async fn session_command(
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+fn validate_mentioned_file(workspace: &Path, value: &str) -> Result<PathBuf> {
+    let candidate = workspace.join(value);
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("mentioned path {} does not exist", candidate.display()))?;
+    if !canonical.starts_with(workspace) {
+        bail!("mentioned file must stay inside the workspace");
+    }
+    if !canonical.is_file() {
+        bail!("mentioned path must be a file");
+    }
+    if std::fs::metadata(&canonical)?.len() > 256 * 1024 {
+        bail!("mentioned file exceeds 256 KiB");
+    }
+    Ok(canonical.strip_prefix(workspace)?.to_path_buf())
+}
+
+fn append_mentions(objective: &mut String, session: &session::Session) -> Result<()> {
+    if session.mentions.is_empty() {
+        return Ok(());
+    }
+    objective.push_str("\n\nATTACHED WORKSPACE FILES\n");
+    for relative in &session.mentions {
+        let canonical = session.workspace.join(relative).canonicalize()?;
+        if !canonical.starts_with(&session.workspace) || !canonical.is_file() {
+            bail!("mentioned file {} is no longer valid", relative.display());
+        }
+        if std::fs::metadata(&canonical)?.len() > 256 * 1024 {
+            bail!("mentioned file {} exceeds 256 KiB", relative.display());
+        }
+        objective.push_str(&format!("\n--- {} ---\n", relative.display()));
+        objective.push_str(&std::fs::read_to_string(&canonical).with_context(|| {
+            format!("mentioned file {} is not valid UTF-8 text", relative.display())
+        })?);
+    }
+    Ok(())
+}
+
+fn workspace_skills(workspace: &Path, filter: &str) -> Result<Vec<String>> {
+    let needle = filter.to_ascii_lowercase();
+    let mut skills = Vec::new();
+    for entry in ignore::WalkBuilder::new(workspace)
+        .hidden(false)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+    {
+        let entry = entry?;
+        if entry.file_type().is_some_and(|kind| kind.is_file())
+            && entry.file_name() == "SKILL.md"
+        {
+            let relative = entry.path().strip_prefix(workspace)?.to_string_lossy().replace('\\', "/");
+            if needle.is_empty() || relative.to_ascii_lowercase().contains(&needle) {
+                skills.push(relative);
+            }
+        }
+    }
+    skills.sort();
+    Ok(skills)
 }
 
 impl DaemonClient {
