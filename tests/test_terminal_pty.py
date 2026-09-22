@@ -78,7 +78,7 @@ class TerminalPtyTests(unittest.TestCase):
                     until(b'openforge>')
                     os.write(master, b'/')
                     until(b'/status')  # menu appears without Enter
-                    os.write(master, b'st\x1b[B\r')
+                    os.write(master, b'st\r')
                     until(b'budget: USD')
                     until(b'\x1b[?2004h')
                     os.write(master, b'/budet\x1b[D\x1b[Dg\x1b[F 2\r')
