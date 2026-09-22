@@ -403,7 +403,8 @@ impl Engine {
                 max_attempts: task.max_attempts.max(1),
                 budget: TaskBudget {
                     max_usd: task.max_usd,
-                    max_model_calls: task.max_model_calls.max(1),
+                    // Leave room for one action, a finish decision and two format corrections.
+                    max_model_calls: task.max_model_calls.max(4),
                     max_tool_calls: task.max_tool_calls.max(1),
                     max_wall_seconds: task.resources.wall_seconds.max(1),
                 },
@@ -1115,6 +1116,7 @@ fn normalize_planner_resources(resources: &mut ResourceLimits) {
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
 {"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
+Allocate at least 4 max_model_calls per task to allow an action, verification and format corrections.
 Resource minimums: cpu_cores > 0, memory_mb >= 128, disk_mb >= 64, pids >= 1, wall_seconds >= 1, output byte limits >= 1024. These apply even to read-only tasks.
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
