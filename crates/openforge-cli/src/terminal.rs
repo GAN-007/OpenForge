@@ -119,7 +119,11 @@ impl Editor {
                 .chars()
                 .take(width.saturating_sub(12 + before.chars().count()))
                 .collect();
-            print!("openforge> {before}{after}");
+            print!(
+                "openforge> {}{}",
+                display_input(&before),
+                display_input(&after)
+            );
             let mut rows = 0;
             let start = selected.saturating_sub(5);
             for (i, name) in choices.iter().enumerate().skip(start).take(6) {
@@ -141,11 +145,7 @@ impl Editor {
             io::stdout().flush()?;
             let ev = event::read()?;
             if let Event::Paste(text) = ev {
-                let pasted: String = text
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .map(|c| if c == '\n' { ' ' } else { c })
-                    .collect();
+                let pasted = pasted_text(&text);
                 input.insert_str(position, &pasted);
                 position += pasted.len();
                 menu = false;
@@ -235,6 +235,15 @@ impl Editor {
                     position = input.len();
                     menu = false;
                 }
+                KeyCode::Enter
+                    if key
+                        .modifiers
+                        .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+                {
+                    input.insert(position, '\n');
+                    position += 1;
+                    menu = false;
+                }
                 KeyCode::Enter => {
                     if !choices.is_empty() {
                         input = choices[selected].into();
@@ -244,7 +253,7 @@ impl Editor {
                         cursor::MoveToColumn(0),
                         terminal::Clear(ClearType::FromCursorDown)
                     )?;
-                    print!("openforge> {input}\r\n");
+                    print!("openforge> {}\r\n", input.replace('\n', "\r\n"));
                     io::stdout().flush()?;
                     if !input.is_empty() {
                         self.history.push(input.clone());
@@ -257,9 +266,32 @@ impl Editor {
     }
 }
 
+fn pasted_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+fn display_input(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' => '↵',
+            '\t' => '→',
+            c => c,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pasted_code_preserves_lines_and_indentation_without_terminal_controls() {
+        assert_eq!(
+            pasted_text("fn main() {\r\n\tcall();\n}\u{1b}"),
+            "fn main() {\n\tcall();\n}"
+        );
+        assert_eq!(display_input("a\n\tb"), "a↵→b");
+    }
     #[test]
     fn palette_filters_only_commands() {
         assert_eq!(candidates("/res"), vec!["/resume"]);

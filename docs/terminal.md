@@ -1,6 +1,6 @@
 # Interactive terminal
 
-Run `openforge` in a project, or select CLI in `setup.sh`. Type `/` to open the command picker immediately. Type a prefix to filter, use Up/Down to select, Enter to run, Tab to complete a command before entering its arguments, and Escape to close the picker. Outside the picker, Up/Down recalls session input. Left/Right, Home/End, Backspace/Delete edit the prompt; Ctrl-U clears it, Ctrl-C clears a draft, and Ctrl-D exits an empty prompt. Piped input remains supported without terminal escape sequences.
+Run `openforge` in a project, or select CLI in `setup.sh`. Type `/` to open the command picker immediately. Type a prefix to filter, use Up/Down to select, Enter to run, Tab to complete a command before entering its arguments, and Escape to close the picker. Outside the picker, Up/Down recalls session input. Left/Right, Home/End, Backspace/Delete edit the prompt; Ctrl-U clears it, Ctrl-C clears a draft, and Ctrl-D exits an empty prompt. Bracketed paste preserves code line breaks and indentation; Alt-Enter inserts a line break on terminals that report that modifier. Piped input remains supported without terminal escape sequences.
 
 | Command | Implemented behavior |
 | --- | --- |

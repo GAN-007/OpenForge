@@ -901,6 +901,39 @@ async fn session_command(
 ) -> Result<bool> {
     let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
     let argument = argument.trim();
+    if !argument.is_empty()
+        && matches!(
+            command,
+            "/" | "/help"
+                | "/status"
+                | "/model"
+                | "/plan"
+                | "/diff"
+                | "/init"
+                | "/review"
+                | "/new"
+                | "/fork"
+                | "/compact"
+                | "/apps"
+                | "/runs"
+                | "/tasks"
+                | "/events"
+                | "/clear"
+                | "/connect"
+                | "/disconnect"
+                | "/gateway"
+                | "/provider"
+                | "/context"
+                | "/files"
+                | "/tree"
+                | "/pwd"
+                | "/whoami"
+                | "/exit"
+                | "/quit"
+        )
+    {
+        bail!("{command} does not accept arguments; use /help. No model request was sent");
+    }
     match command {
         "/" | "/help" => terminal::help(),
         "/status" => {
