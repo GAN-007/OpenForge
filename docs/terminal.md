@@ -1,6 +1,6 @@
 # Interactive terminal
 
-Run `openforge` in a project, or select CLI in `setup.sh`. Type `/` to open the command picker immediately. Type a prefix to filter, use Up/Down to select, Enter to run, Tab to complete a command before entering its arguments, and Escape to close the picker. Outside the picker, Up/Down recalls session input. Left/Right, Home/End, Backspace/Delete edit the prompt; Ctrl-U clears it, Ctrl-C clears a draft, and Ctrl-D exits an empty prompt. Piped input remains supported without terminal escape sequences.
+Run `openforge` in a project, or select CLI in `setup.sh`. Type `/` to open the command picker immediately. Type a prefix to filter, use Up/Down to select, Enter to run, Tab to complete a command before entering its arguments, and Escape to close the picker. Outside the picker, Up/Down recalls session input. Left/Right, Home/End, Backspace/Delete edit the prompt; Ctrl-U clears it, Ctrl-C clears a draft, and Ctrl-D exits an empty prompt. Bracketed paste preserves embedded newlines, tabs, and code indentation instead of flattening pasted code into one line. Piped input remains supported without terminal escape sequences.
 
 | Command | Implemented behavior |
 | --- | --- |
@@ -24,7 +24,7 @@ Run `openforge` in a project, or select CLI in `setup.sh`. Type `/` to open the 
 | `/files`, `/pwd`, `/whoami` | Local workspace and identity inspection |
 | `/quit`, `/exit` | Save and leave the terminal |
 
-Unknown slash commands never create a model request. During execution the terminal polls audit events and shows task/model/tool activity; completed task summaries are displayed and retained as follow-up context. Generated changes remain on the reported integration branch, where they can be inspected before merging.
+Unknown slash commands and invalid arguments to local slash commands never create a model request. During execution the terminal polls audit events and shows task/model/tool activity; completed task summaries are displayed and retained as follow-up context. Generated changes remain on the reported integration branch, where they can be inspected before merging.
 
 Sessions are saved atomically under `$XDG_STATE_HOME/openforge/sessions` or `~/.local/state/openforge/sessions`, with Unix directory mode 0700 and file mode 0600. They contain conversation text and run IDs; gateway keys entered through the non-echoing connection prompt are not included. Resume is restricted to the same workspace and retains the current mode, budget and permissions rather than silently restoring broader access.
 

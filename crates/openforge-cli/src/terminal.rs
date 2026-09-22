@@ -107,18 +107,16 @@ impl Editor {
                 cursor::MoveToColumn(0),
                 terminal::Clear(ClearType::FromCursorDown)
             )?;
-            let before: String = input[..position]
-                .chars()
-                .rev()
-                .take(width.saturating_sub(12))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let after: String = input[position..]
-                .chars()
-                .take(width.saturating_sub(12 + before.chars().count()))
-                .collect();
+            let before = render_fragment(
+                &input[..position],
+                width.saturating_sub(12),
+                true,
+            );
+            let after = render_fragment(
+                &input[position..],
+                width.saturating_sub(12 + before.chars().count()),
+                false,
+            );
             print!("openforge> {before}{after}");
             let mut rows = 0;
             let start = selected.saturating_sub(5);
@@ -141,11 +139,7 @@ impl Editor {
             io::stdout().flush()?;
             let ev = event::read()?;
             if let Event::Paste(text) = ev {
-                let pasted: String = text
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .map(|c| if c == '\n' { ' ' } else { c })
-                    .collect();
+                let pasted = normalize_paste(&text);
                 input.insert_str(position, &pasted);
                 position += pasted.len();
                 menu = false;
@@ -257,6 +251,32 @@ impl Editor {
     }
 }
 
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|character| {
+            !character.is_control() || matches!(character, '\n' | '\t')
+        })
+        .collect()
+}
+
+fn render_fragment(value: &str, maximum: usize, from_end: bool) -> String {
+    let rendered = value.replace('\n', "↵").replace('\t', "    ");
+    if from_end {
+        rendered
+            .chars()
+            .rev()
+            .take(maximum)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        rendered.chars().take(maximum).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +286,13 @@ mod tests {
         assert!(candidates("/resume uuid").is_empty());
         assert!(candidates("ordinary objective").is_empty());
         assert_eq!(candidates("/").len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn pasted_code_preserves_lines_tabs_and_indentation() {
+        assert_eq!(
+            normalize_paste("fn main() {\r\n\tprintln!(\"hi\");\r\n}\u{0007}"),
+            "fn main() {\n\tprintln!(\"hi\");\n}"
+        );
     }
 }

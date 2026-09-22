@@ -582,8 +582,8 @@ async fn chat(
         let Some(input) = editor.read()? else {
             break;
         };
-        let input = input.trim();
-        if input.is_empty() {
+        let input = input.trim_end();
+        if input.trim().is_empty() {
             continue;
         }
 
@@ -901,6 +901,18 @@ async fn session_command(
 ) -> Result<bool> {
     let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
     let argument = argument.trim();
+    let accepts_argument = matches!(
+        command,
+        "/permissions"
+            | "/approvals"
+            | "/mode"
+            | "/budget"
+            | "/resume"
+            | "/mcp"
+    );
+    if !argument.is_empty() && command.starts_with('/') && !accepts_argument {
+        bail!("{command} does not accept arguments");
+    }
     match command {
         "/" | "/help" => terminal::help(),
         "/status" => {
