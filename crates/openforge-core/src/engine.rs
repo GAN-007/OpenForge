@@ -369,7 +369,8 @@ impl Engine {
         }
 
         let mut tasks = Vec::with_capacity(plan.tasks.len());
-        for task in plan.tasks {
+        for mut task in plan.tasks {
+            normalize_planner_resources(&mut task.resources);
             let dependencies = task
                 .depends_on
                 .iter()
@@ -1097,9 +1098,24 @@ fn default_tool_calls() -> u32 {
     200
 }
 
+// Model-generated resource estimates must satisfy the runner's minimum allocation.
+// This is applied only to planner output, not operator-supplied sandbox policy.
+fn normalize_planner_resources(resources: &mut ResourceLimits) {
+    if !resources.cpu_cores.is_finite() || resources.cpu_cores <= 0.0 {
+        resources.cpu_cores = 1.0;
+    }
+    resources.memory_mb = resources.memory_mb.max(128);
+    resources.disk_mb = resources.disk_mb.max(64);
+    resources.pids = resources.pids.max(1);
+    resources.wall_seconds = resources.wall_seconds.max(1);
+    resources.max_stdout_bytes = resources.max_stdout_bytes.max(1024);
+    resources.max_stderr_bytes = resources.max_stderr_bytes.max(1024);
+}
+
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
 {"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
+Resource minimums: cpu_cores > 0, memory_mb >= 128, disk_mb >= 64, pids >= 1, wall_seconds >= 1, output byte limits >= 1024. These apply even to read-only tasks.
 Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }
@@ -1139,4 +1155,37 @@ async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into())
+}
+
+#[cfg(test)]
+mod planner_resource_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_zero_disk_estimates_meet_runner_minimums() {
+        let mut resources = ResourceLimits {
+            cpu_cores: 0.0,
+            memory_mb: 0,
+            disk_mb: 0,
+            pids: 0,
+            wall_seconds: 0,
+            max_stdout_bytes: 0,
+            max_stderr_bytes: 0,
+        };
+        normalize_planner_resources(&mut resources);
+        let policy = SandboxPolicy {
+            cpus: resources.cpu_cores,
+            memory_mb: resources.memory_mb,
+            disk_mb: resources.disk_mb,
+            pids_limit: resources.pids,
+            max_stdout_bytes: resources.max_stdout_bytes,
+            max_stderr_bytes: resources.max_stderr_bytes,
+            ..Default::default()
+        };
+        policy.validate().unwrap();
+        let mut normal = ResourceLimits::default();
+        let previous = serde_json::to_value(&normal).unwrap();
+        normalize_planner_resources(&mut normal);
+        assert_eq!(serde_json::to_value(normal).unwrap(), previous);
+    }
 }

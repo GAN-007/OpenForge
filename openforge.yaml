@@ -22,7 +22,11 @@ providers:
         privacy_score: 1.0
         max_data_classification: RESTRICTED
 
-mcp_servers: []
+mcp_servers:
+  - name: github
+    program: python3
+    args: [plugins/builtin/github/server.py]
+    timeout_seconds: 70
 
 browser:
   program: node

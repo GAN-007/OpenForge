@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import io
 from pathlib import Path
 import socket
 import subprocess
@@ -47,6 +48,24 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 launcher.daemon_url('http://127.0.0.1:8875')
             spawn.assert_not_called()
+
+    def test_restart_refuses_active_runs_or_unverifiable_state(self):
+        for payload in [{'result': [{'status': 'running'}]}, {'error': {'code': -1}}]:
+            with patch.object(launcher, 'owned_daemon_pid', return_value=123):
+                with patch.object(launcher.HTTP, 'open', return_value=io.StringIO(json.dumps(payload))):
+                    with patch.object(launcher.os, 'kill') as kill:
+                        with self.assertRaises(RuntimeError):
+                            launcher.restart_daemon('http://127.0.0.1:8875')
+                        kill.assert_not_called()
+
+    def test_restart_uses_only_identified_idle_process(self):
+        with patch.object(launcher, 'owned_daemon_pid', return_value=123):
+            with patch.object(launcher.HTTP, 'open', return_value=io.StringIO('{"result": []}')):
+                with patch.object(launcher.os, 'kill') as kill, patch.object(launcher, 'spawn') as spawn:
+                    with patch.object(launcher, 'health', return_value=False), patch.object(launcher, 'wait_ready'):
+                        launcher.restart_daemon('http://127.0.0.1:8875')
+                    kill.assert_called_once_with(123, launcher.signal.SIGTERM)
+                    self.assertIn('127.0.0.1:8875', spawn.call_args.args[0])
 
     def test_ide_workspace_preserves_project_and_uses_same_daemon(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(launcher, 'RUNTIME', Path(tmp)):
