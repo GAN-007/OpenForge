@@ -1128,7 +1128,10 @@ async fn session_command(
             let deleted = session.delete(root)?;
             *session = session::Session::new(&workspace);
             session.save(root)?;
-            println!("Deleted previous session: {deleted}. New session: {}", session.id);
+            println!(
+                "Deleted previous session: {deleted}. New session: {}",
+                session.id
+            );
         }
         "/resume" => {
             if argument.is_empty() {
@@ -1158,7 +1161,9 @@ async fn session_command(
             );
         }
         "/copy" => {
-            let output = session.latest_output().context("No completed OpenForge output to copy")?;
+            let output = session
+                .latest_output()
+                .context("No completed OpenForge output to copy")?;
             print!("\x1b]52;c;{}\x07", BASE64.encode(output.as_bytes()));
             io::stdout().flush()?;
             println!("\nLatest OpenForge output sent to the terminal clipboard");
@@ -1188,7 +1193,12 @@ async fn session_command(
             if argument == "verbose" {
                 let servers = daemon.rpc("mcp/list_servers", json!({})).await?;
                 print_json(&servers)?;
-                for server in servers.as_array().into_iter().flatten().filter_map(Value::as_str) {
+                for server in servers
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
                     println!("MCP server: {server}");
                     print_json(
                         &daemon
@@ -1211,9 +1221,7 @@ async fn session_command(
                 print_json(&daemon.rpc(method, params).await?)?;
             }
         }
-        "/apps" | "/plugins" => {
-            print_json(&daemon.rpc("plugins/list", json!({})).await?)?
-        }
+        "/apps" | "/plugins" => print_json(&daemon.rpc("plugins/list", json!({})).await?)?,
         "/agent" | "/subagents" => {
             if let Some(id) = session.last_run {
                 println!("Run task agents:");
@@ -1237,12 +1245,18 @@ async fn session_command(
                     .map(str::to_string)
                     .collect();
                 for process_id in ids {
-                    let _ = daemon.rpc("acp/close", json!({"process_id":process_id})).await?;
+                    let _ = daemon
+                        .rpc("acp/close", json!({"process_id":process_id}))
+                        .await?;
                 }
                 println!("Stopped all ACP processes");
             } else {
                 let process_id = Uuid::parse_str(argument).context("use /stop PROCESS_UUID|all")?;
-                print_json(&daemon.rpc("acp/close", json!({"process_id":process_id})).await?)?;
+                print_json(
+                    &daemon
+                        .rpc("acp/close", json!({"process_id":process_id}))
+                        .await?,
+                )?;
             }
         }
         "/runs" => print_json(&daemon.rpc("run/list", json!({"limit":20})).await?)?,
@@ -1326,7 +1340,10 @@ fn append_mentions(objective: &mut String, session: &session::Session) -> Result
         }
         objective.push_str(&format!("\n--- {} ---\n", relative.display()));
         objective.push_str(&std::fs::read_to_string(&canonical).with_context(|| {
-            format!("mentioned file {} is not valid UTF-8 text", relative.display())
+            format!(
+                "mentioned file {} is not valid UTF-8 text",
+                relative.display()
+            )
         })?);
     }
     Ok(())
@@ -1343,10 +1360,12 @@ fn workspace_skills(workspace: &Path, filter: &str) -> Result<Vec<String>> {
         .build()
     {
         let entry = entry?;
-        if entry.file_type().is_some_and(|kind| kind.is_file())
-            && entry.file_name() == "SKILL.md"
-        {
-            let relative = entry.path().strip_prefix(workspace)?.to_string_lossy().replace('\\', "/");
+        if entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == "SKILL.md" {
+            let relative = entry
+                .path()
+                .strip_prefix(workspace)?
+                .to_string_lossy()
+                .replace('\\', "/");
             if needle.is_empty() || relative.to_ascii_lowercase().contains(&needle) {
                 skills.push(relative);
             }
