@@ -1,3 +1,5 @@
+mod session;
+mod terminal;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use openforge_core::{Engine, OpenForgeConfig, RunnerBackend};
@@ -552,7 +554,13 @@ async fn chat(
         } else {
             "configured provider"
         },
-        serde_json::to_string(&models)?
+        models
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["model"].as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     println!(
         "mode: {} · per-turn budget: USD {:.2} · type /help for commands",
@@ -560,19 +568,42 @@ async fn chat(
         budget
     );
 
-    let mut transcript: Vec<(String, String)> = Vec::new();
+    let mut mode = mode;
+    let mut budget = budget;
+    let mut policy = policy;
+    let session_root = session::Session::root()?;
+    let mut session = session::Session::new(&repo);
+    let mut editor = terminal::Editor::default();
+    println!(
+        "session: {} · / opens commands · Tab completes · Up/Down selects or recalls history",
+        session.id
+    );
     loop {
-        print!("openforge> ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            println!();
+        let Some(input) = editor.read()? else {
             break;
-        }
+        };
         let input = input.trim();
         if input.is_empty() {
             continue;
+        }
+
+        match session_command(
+            daemon,
+            input,
+            &mut session,
+            &mut mode,
+            &mut budget,
+            &mut policy,
+            &session_root,
+        )
+        .await
+        {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("Command failed: {error}");
+                continue;
+            }
         }
 
         if is_file_listing(input) {
@@ -647,33 +678,66 @@ async fn chat(
                 continue;
             }
             "/context" => {
-                for (role, text) in &transcript {
+                for (role, text) in &session.transcript {
                     println!("{role}: {text}");
                 }
                 continue;
             }
             "/clear" => {
-                transcript.clear();
+                session.transcript.clear();
                 println!("conversation context cleared");
                 continue;
             }
             _ => {}
         }
 
+        let review_policy = if input == "/review" {
+            match review_policy(&policy, &session_root, &session) {
+                Ok(policy) => Some(policy),
+                Err(error) => {
+                    eprintln!("Review unavailable: {error}");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let turn_mode = if review_policy.is_some() {
+            Mode::Execute
+        } else {
+            mode
+        };
+        let turn_policy = review_policy
+            .as_ref()
+            .map(|value| value.0.as_path())
+            .unwrap_or(&policy);
         let outcome: Result<String> = async {
-            let objective = conversation_objective(&transcript, input);
+            let request = if input == "/review" {
+                format!("Review the following tracked changes for bugs and regressions. Report findings with file references. Do not modify files or execute commands. This is read-only reporting: use empty acceptance checks.\n{}", workspace_diff(&repo, session.last_run)?)
+            } else { input.to_owned() };
+            let mut objective = conversation_objective(&session.transcript, &request);
+            let instructions = repo.join("AGENTS.md");
+            if instructions.exists() {
+                let canonical = instructions.canonicalize()?;
+                if !canonical.starts_with(&repo) { bail!("AGENTS.md must stay inside the workspace"); }
+                if std::fs::metadata(&canonical)?.len() > 64 * 1024 { bail!("AGENTS.md exceeds 64 KiB"); }
+                objective.push_str("\n\nPROJECT INSTRUCTIONS (AGENTS.md)\n");
+                objective.push_str(&std::fs::read_to_string(canonical)?);
+            }
             let run = daemon
                 .rpc(
                     "run/create",
                     json!({
                         "repo": repo_string,
                         "objective": objective,
-                        "autonomy": mode.as_str(),
+                        "autonomy": turn_mode.as_str(),
                         "budget_usd": budget
                     }),
                 )
                 .await?;
             let run_id = result_uuid(&run, "id")?;
+            session.last_run = Some(run_id);
+            session.save(&session_root)?;
             println!("run {run_id}");
             let tasks = daemon
                 .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
@@ -681,19 +745,19 @@ async fn chat(
             let task_count = tasks.as_array().map_or(0, Vec::len);
             println!("planned {task_count} task(s) · run {run_id}");
 
-            let summary = if mode.executes() {
+            let summary = if turn_mode.executes() {
                 let selected =
                     runner
                         .map(Runner::as_str)
-                        .unwrap_or(if matches!(mode, Mode::Autonomous) {
+                        .unwrap_or(if matches!(turn_mode, Mode::Autonomous) {
                             "docker"
                         } else {
                             "local"
                         });
-                let policy = canonical_policy(&policy)?;
+                let policy = canonical_policy(turn_policy)?;
                 let execution = daemon
-                    .rpc(
-                        "run/execute",
+                    .execute_with_feedback(
+                        run_id,
                         json!({
                             "repo": repo_string,
                             "run_id": run_id,
@@ -708,6 +772,22 @@ async fn chat(
                     .unwrap_or("integration branch unavailable");
                 let current = daemon.rpc("run/get", json!({"run_id": run_id})).await?;
                 println!("completed · {branch}");
+                let events = daemon
+                    .rpc("event/list", json!({"run_id": run_id, "limit": 1000}))
+                    .await?;
+                let summaries: Vec<_> = events
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|event| event["event_type"] == "task.completed")
+                    .filter_map(|event| event["payload"]["summary"].as_str())
+                    .collect();
+                for summary in &summaries {
+                    println!("{summary}");
+                }
+                if !summaries.is_empty() {
+                    return Ok(summaries.join("\n"));
+                }
                 format!(
                     "run {run_id} completed on {branch}; status={}",
                     current
@@ -735,13 +815,270 @@ async fn chat(
                 continue;
             }
         };
-        transcript.push(("user".into(), input.to_string()));
-        transcript.push(("openforge".into(), summary));
-        if transcript.len() > 24 {
-            transcript.drain(0..transcript.len() - 24);
+        session.transcript.push(("user".into(), input.to_string()));
+        session.transcript.push(("openforge".into(), summary));
+        if session.transcript.len() > 24 {
+            session.transcript.drain(0..session.transcript.len() - 24);
+        }
+        session.save(&session_root)?;
+    }
+    session.save(&session_root)?;
+    Ok(())
+}
+
+struct ReviewPolicy(PathBuf);
+impl Drop for ReviewPolicy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn review_policy(policy: &Path, root: &Path, session: &session::Session) -> Result<ReviewPolicy> {
+    session.save(root)?;
+    let mut policy = AgentPolicy::from_yaml(policy)?;
+    policy.autonomy = AutonomyLevel::Suggest;
+    policy.browser.default = openforge_policy::Decision::Deny;
+    policy.browser.allow.clear();
+    policy.network.default = openforge_policy::Decision::Deny;
+    policy.network.allow.clear();
+    let path = root.join(format!("review-policy-{}.json", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&path)?
+        .write_all(&serde_json::to_vec(&policy)?)?;
+    Ok(ReviewPolicy(path))
+}
+
+fn workspace_diff(repo: &Path, run: Option<Uuid>) -> Result<String> {
+    let mut result = String::new();
+    let mut refs = vec![vec!["HEAD".to_owned()]];
+    if let Some(id) = run {
+        let branch = format!("refs/heads/of/integration/{id}");
+        if ProcessCommand::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "--verify", &branch])
+            .output()?
+            .status
+            .success()
+        {
+            refs.push(vec!["HEAD".into(), branch]);
         }
     }
-    Ok(())
+    for range in refs {
+        let output = ProcessCommand::new("git")
+            .current_dir(repo)
+            .args(["diff", "--no-ext-diff", "--no-textconv"])
+            .args(&range)
+            .arg("--")
+            .output()?;
+        if !output.status.success() {
+            bail!("git diff failed; the repository needs an initial commit");
+        }
+        if result.len() + output.stdout.len() > 128 * 1024 {
+            bail!("diff exceeds 128 KiB; narrow the changes before reviewing");
+        }
+        result.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    if result.is_empty() {
+        result = "No tracked changes in the workspace or last run".into();
+    }
+    Ok(result)
+}
+
+async fn session_command(
+    daemon: &DaemonClient,
+    input: &str,
+    session: &mut session::Session,
+    mode: &mut Mode,
+    budget: &mut f64,
+    policy: &mut PathBuf,
+    root: &Path,
+) -> Result<bool> {
+    let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
+    let argument = argument.trim();
+    match command {
+        "/" | "/help" => terminal::help(),
+        "/status" => {
+            println!(
+                "session: {}\nworkspace: {}\nmode: {}\nbudget: USD {:.2}\npolicy: {}",
+                session.id,
+                session.workspace.display(),
+                mode.as_str(),
+                budget,
+                policy.display()
+            );
+            if let Some(id) = session.last_run {
+                print_json(&daemon.rpc("run/get", json!({"run_id": id})).await?)?;
+            }
+        }
+        "/model" => {
+            print_json(&daemon.rpc("model/list", json!({})).await?)?;
+            println!(
+                "Models are configured by the shared daemon. Sevi auto-select routes upstream; this gateway does not expose model/reasoning selection."
+            );
+        }
+        "/permissions" | "/approvals" => {
+            if !argument.is_empty() {
+                let path = canonical_policy(Path::new(argument))?;
+                AgentPolicy::from_yaml(&path)?;
+                *policy = PathBuf::from(path);
+            }
+            println!(
+                "Active policy: {}. Ask decisions stop for approval; changing policy affects future turns.",
+                policy.display()
+            );
+            print_json(&serde_json::to_value(AgentPolicy::from_yaml(&*policy)?)?)?;
+        }
+        "/plan" => {
+            *mode = Mode::Suggest;
+            println!(
+                "Planning mode: objectives create plans without execution. Use /mode execute to execute future objectives."
+            );
+        }
+        "/mode" => {
+            if !argument.is_empty() {
+                *mode = match argument {
+                    "suggest" => Mode::Suggest,
+                    "edit" => Mode::Edit,
+                    "execute" => Mode::Execute,
+                    _ => bail!("use /mode suggest|edit|execute"),
+                };
+            }
+            println!("Mode: {}", mode.as_str());
+        }
+        "/budget" => {
+            if !argument.is_empty() {
+                let value: f64 = argument.parse().context("use /budget POSITIVE_USD")?;
+                if !value.is_finite() || value <= 0.0 {
+                    bail!("budget must be positive and finite");
+                }
+                *budget = value;
+            }
+            println!("Next-turn run budget: USD {budget:.2}");
+        }
+        "/diff" => println!("{}", workspace_diff(&session.workspace, session.last_run)?),
+        "/init" => {
+            let path = session.workspace.join("AGENTS.md");
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).context("AGENTS.md already exists or cannot be created; existing instructions are preserved")?;
+            file.write_all(b"# Project instructions\n\nRead the repository documentation before changing code. Preserve existing behavior unless the task explicitly changes it. Follow the surrounding code style. Run the relevant existing tests for each change, and report any checks that could not run. Never commit credentials or claim validation that was not performed.\n")?;
+            println!(
+                "Created {}. These instructions are included in future terminal objectives.",
+                path.display()
+            );
+        }
+        "/review" => return Ok(false),
+        "/new" => {
+            session.save(root)?;
+            *session = session::Session::new(&session.workspace);
+            session.save(root)?;
+            println!("New session: {}", session.id);
+        }
+        "/fork" => {
+            session.save(root)?;
+            session.id = Uuid::new_v4();
+            session.save(root)?;
+            println!("Forked session: {}", session.id);
+        }
+        "/resume" => {
+            if argument.is_empty() {
+                session::Session::list(root, &session.workspace)?;
+            } else {
+                let resumed = session::Session::load(
+                    root,
+                    Uuid::parse_str(argument).context("use /resume SESSION_UUID")?,
+                    &session.workspace,
+                )?;
+                session.save(root)?;
+                *session = resumed;
+                println!(
+                    "Resumed {} ({} messages). Current mode and permissions are retained.",
+                    session.id,
+                    session.transcript.len()
+                );
+            }
+        }
+        "/compact" => {
+            let removed = session.transcript.len().saturating_sub(6);
+            session.transcript.drain(..removed);
+            session.save(root)?;
+            println!(
+                "Removed {removed} older messages; retained {}. This is local truncation, not a model-generated summary.",
+                session.transcript.len()
+            );
+        }
+        "/mcp" => {
+            let (method, params) = if argument.is_empty() {
+                ("mcp/list_servers", json!({}))
+            } else {
+                (
+                    "mcp/list_tools",
+                    json!({"server_name": argument, "policy_path": canonical_policy(policy)?}),
+                )
+            };
+            print_json(&daemon.rpc(method, params).await?)?;
+        }
+        "/apps" => print_json(&daemon.rpc("plugins/list", json!({})).await?)?,
+        "/runs" => print_json(&daemon.rpc("run/list", json!({"limit":20})).await?)?,
+        "/tasks" | "/events" => {
+            let id = session.last_run.context("No run in this session yet")?;
+            print_json(
+                &daemon
+                    .rpc(
+                        if command == "/tasks" {
+                            "task/list"
+                        } else {
+                            "event/list"
+                        },
+                        json!({"run_id": id, "limit":1000}),
+                    )
+                    .await?,
+            )?;
+        }
+        "/clear" => {
+            session.transcript.clear();
+            session.save(root)?;
+            println!("conversation context cleared");
+        }
+        "/connect" | "/disconnect" | "/gateway" | "/provider" | "/context" | "/files" | "/tree"
+        | "/pwd" | "/whoami" | "/exit" | "/quit" => return Ok(false),
+        _ if command.starts_with('/') => {
+            println!(
+                "Unknown command {command}. Type / for available commands. No model request was sent."
+            );
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+impl DaemonClient {
+    async fn execute_with_feedback(&self, run_id: Uuid, params: Value) -> Result<Value> {
+        let execution = self.rpc("run/execute", params);
+        tokio::pin!(execution);
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(2),
+        );
+        let mut after = 0;
+        loop {
+            tokio::select! {
+                result = &mut execution => return result,
+                _ = interval.tick() => {
+                    if let Ok(Ok(events)) = tokio::time::timeout(std::time::Duration::from_secs(2), self.rpc("event/list", json!({"run_id":run_id,"after_sequence":after,"limit":100}))).await {
+                        for event in events.as_array().into_iter().flatten() {
+                            after = after.max(event["sequence"].as_i64().unwrap_or(after));
+                            if let Some(kind) = event["event_type"].as_str() { println!("  · {kind}"); }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn is_file_listing(input: &str) -> bool {
@@ -1496,5 +1833,39 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["openforge", "--standalone", "providers"]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    #[test]
+    fn review_policy_denies_mutation_and_is_removed_after_use() {
+        let root = tempfile::tempdir().unwrap();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/policies/development.yaml");
+        let session = session::Session::new(root.path());
+        let temporary = review_policy(&source, root.path(), &session).unwrap();
+        let path = temporary.0.clone();
+        let policy = AgentPolicy::from_yaml(&path).unwrap();
+        use openforge_policy::{CapabilityRequest, Decision};
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::ReadPath("README.md")),
+            Decision::Allow
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::WritePath("README.md")),
+            Decision::Deny
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Process(&["git".into(), "status".into()])),
+            Decision::Deny
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Mcp("github/create_issue")),
+            Decision::Deny
+        );
+        drop(temporary);
+        assert!(!path.exists());
     }
 }
