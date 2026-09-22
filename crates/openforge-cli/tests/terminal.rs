@@ -63,7 +63,7 @@ async fn listing_is_local_and_failed_execution_keeps_terminal_open() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"list all files and folders\nFix a test\n/help\n/quit\n")
+        .write_all(b"list all files and folders\nlist all files in this folder\nwhoami\npwd\nls\nFix a test\n/help\n/quit\n")
         .await
         .unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait_with_output())
@@ -77,7 +77,13 @@ async fn listing_is_local_and_failed_execution_keeps_terminal_open() {
     assert!(stdout.contains("README.md"));
     assert!(!stdout.contains("target/ignored"));
     assert!(stdout.contains("/files       list workspace"));
-    assert!(stdout.matches("openforge> ").count() >= 4);
+    assert!(stdout.matches("openforge> ").count() >= 8);
+    assert_eq!(stdout.matches("Workspace files and folders").count(), 3);
+    let identity = std::process::Command::new("id")
+        .arg("-un")
+        .output()
+        .unwrap();
+    assert!(stdout.contains(String::from_utf8(identity.stdout).unwrap().trim()));
     assert!(stderr.contains("terminal remains open"));
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }

@@ -354,11 +354,15 @@ impl Engine {
             bail!("planner returned no tasks");
         }
 
-        let allocated = plan.tasks.iter().map(|task| task.max_usd).sum::<f64>();
         let available = (run.budget.hard_limit - self.store.run_cost(run.id)?).max(0.0);
-        if !allocated.is_finite() || allocated <= 0.0 || allocated > available {
-            bail!("planner allocated task budget {allocated:.4} but only {available:.4} remains");
-        }
+        let task_budgets = allocate_task_budgets(
+            &plan
+                .tasks
+                .iter()
+                .map(|task| task.max_usd)
+                .collect::<Vec<_>>(),
+            available,
+        )?;
 
         let now = Utc::now();
         let mut id_map = std::collections::HashMap::new();
@@ -369,7 +373,7 @@ impl Engine {
         }
 
         let mut tasks = Vec::with_capacity(plan.tasks.len());
-        for mut task in plan.tasks {
+        for (mut task, task_budget) in plan.tasks.into_iter().zip(task_budgets) {
             normalize_planner_resources(&mut task.resources);
             let dependencies = task
                 .depends_on
@@ -402,7 +406,7 @@ impl Engine {
                 attempts: 0,
                 max_attempts: task.max_attempts.max(1),
                 budget: TaskBudget {
-                    max_usd: task.max_usd,
+                    max_usd: task_budget,
                     // Leave room for one action, a finish decision and two format corrections.
                     max_model_calls: task.max_model_calls.max(4),
                     max_tool_calls: task.max_tool_calls.max(1),
@@ -1113,6 +1117,39 @@ fn default_tool_calls() -> u32 {
     200
 }
 
+// Model estimates determine relative shares of the user's remaining run budget.
+fn allocate_task_budgets(estimates: &[f64], available: f64) -> Result<Vec<f64>> {
+    let total: f64 = estimates.iter().sum();
+    if estimates.is_empty()
+        || estimates
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        || !available.is_finite()
+        || available <= 0.0
+        || !total.is_finite()
+        || total > available
+    {
+        bail!(
+            "planner task budgets must be positive and fit the remaining run budget {available:.4}"
+        );
+    }
+    let mut remaining = available;
+    let mut result = Vec::with_capacity(estimates.len());
+    for (index, estimate) in estimates.iter().enumerate() {
+        let share = if index + 1 == estimates.len() {
+            remaining
+        } else {
+            (available * (estimate / total)).min(remaining)
+        };
+        if share <= 0.0 {
+            bail!("planner task budget is too small to allocate");
+        }
+        result.push(share);
+        remaining -= share;
+    }
+    Ok(result)
+}
+
 fn authorize_acceptance(policy: &AgentPolicy, argv: &[String]) -> Result<()> {
     match policy.evaluate(CapabilityRequest::Process(argv)) {
         Decision::Allow => Ok(()),
@@ -1184,6 +1221,19 @@ async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod planner_resource_tests {
     use super::*;
+
+    #[test]
+    fn generated_estimates_share_remaining_user_budget() {
+        assert_eq!(allocate_task_budgets(&[0.1], 8.5).unwrap(), vec![8.5]);
+        assert_eq!(
+            allocate_task_budgets(&[0.1, 0.3], 8.0).unwrap(),
+            vec![2.0, 6.0]
+        );
+        for estimates in [vec![-1.0, 2.0], vec![0.0], vec![f64::NAN], vec![11.0]] {
+            assert!(allocate_task_budgets(&estimates, 10.0).is_err());
+        }
+        assert!(allocate_task_budgets(&[0.1], 0.0).is_err());
+    }
 
     #[test]
     fn acceptance_commands_obey_process_policy() {
