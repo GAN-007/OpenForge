@@ -1,4 +1,7 @@
+mod session;
+mod terminal;
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand, ValueEnum};
 use openforge_core::{Engine, OpenForgeConfig, RunnerBackend};
 use openforge_policy::AgentPolicy;
@@ -552,7 +555,13 @@ async fn chat(
         } else {
             "configured provider"
         },
-        serde_json::to_string(&models)?
+        models
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["model"].as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     println!(
         "mode: {} · per-turn budget: USD {:.2} · type /help for commands",
@@ -560,19 +569,42 @@ async fn chat(
         budget
     );
 
-    let mut transcript: Vec<(String, String)> = Vec::new();
+    let mut mode = mode;
+    let mut budget = budget;
+    let mut policy = policy;
+    let session_root = session::Session::root()?;
+    let mut session = session::Session::new(&repo);
+    let mut editor = terminal::Editor::default();
+    println!(
+        "session: {} · / opens commands · Tab completes · Up/Down selects or recalls history",
+        session.id
+    );
     loop {
-        print!("openforge> ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            println!();
+        let Some(input) = editor.read()? else {
             break;
-        }
-        let input = input.trim();
-        if input.is_empty() {
+        };
+        let input = input.trim_end();
+        if input.trim().is_empty() {
             continue;
+        }
+
+        match session_command(
+            daemon,
+            input,
+            &mut session,
+            &mut mode,
+            &mut budget,
+            &mut policy,
+            &session_root,
+        )
+        .await
+        {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("Command failed: {error}");
+                continue;
+            }
         }
 
         if is_file_listing(input) {
@@ -647,33 +679,85 @@ async fn chat(
                 continue;
             }
             "/context" => {
-                for (role, text) in &transcript {
+                for (role, text) in &session.transcript {
                     println!("{role}: {text}");
                 }
                 continue;
             }
             "/clear" => {
-                transcript.clear();
+                session.transcript.clear();
                 println!("conversation context cleared");
                 continue;
             }
             _ => {}
         }
 
+        let review_policy = if input == "/review" {
+            match review_policy(&policy, &session_root, &session) {
+                Ok(policy) => Some(policy),
+                Err(error) => {
+                    eprintln!("Review unavailable: {error}");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let turn_mode = if review_policy.is_some() {
+            Mode::Execute
+        } else {
+            mode
+        };
+        let turn_policy = review_policy
+            .as_ref()
+            .map(|value| value.0.as_path())
+            .unwrap_or(&policy);
         let outcome: Result<String> = async {
-            let objective = conversation_objective(&transcript, input);
+            let request = if input == "/review" {
+                format!("Review the following tracked changes for bugs and regressions. Report findings with file references. Do not modify files or execute commands. This is read-only reporting: use empty acceptance checks.\n{}", workspace_diff(&repo, session.last_run)?)
+            } else if let Some(inline_plan) = input.strip_prefix("/plan ") {
+                inline_plan.to_owned()
+            } else {
+                input.to_owned()
+            };
+            let mut objective = conversation_objective(&session.transcript, &request);
+            if let Some(goal) = session.goal.as_deref().filter(|_| !session.goal_paused) {
+                objective.push_str("\n\nPERSISTENT GOAL\n");
+                objective.push_str(goal);
+            }
+            if let Some(personality) = session.personality.as_deref() {
+                if personality != "none" {
+                    objective.push_str("\n\nRESPONSE STYLE\n");
+                    objective.push_str(match personality {
+                        "friendly" => "Be warm, clear, and collaborative while remaining technically precise.",
+                        "pragmatic" => "Be concise, implementation-focused, and explicit about tradeoffs and verification.",
+                        _ => "",
+                    });
+                }
+            }
+            append_mentions(&mut objective, &session)?;
+            let instructions = repo.join("AGENTS.md");
+            if instructions.exists() {
+                let canonical = instructions.canonicalize()?;
+                if !canonical.starts_with(&repo) { bail!("AGENTS.md must stay inside the workspace"); }
+                if std::fs::metadata(&canonical)?.len() > 64 * 1024 { bail!("AGENTS.md exceeds 64 KiB"); }
+                objective.push_str("\n\nPROJECT INSTRUCTIONS (AGENTS.md)\n");
+                objective.push_str(&std::fs::read_to_string(canonical)?);
+            }
             let run = daemon
                 .rpc(
                     "run/create",
                     json!({
                         "repo": repo_string,
                         "objective": objective,
-                        "autonomy": mode.as_str(),
+                        "autonomy": turn_mode.as_str(),
                         "budget_usd": budget
                     }),
                 )
                 .await?;
             let run_id = result_uuid(&run, "id")?;
+            session.last_run = Some(run_id);
+            session.save(&session_root)?;
             println!("run {run_id}");
             let tasks = daemon
                 .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
@@ -681,19 +765,19 @@ async fn chat(
             let task_count = tasks.as_array().map_or(0, Vec::len);
             println!("planned {task_count} task(s) · run {run_id}");
 
-            let summary = if mode.executes() {
+            let summary = if turn_mode.executes() {
                 let selected =
                     runner
                         .map(Runner::as_str)
-                        .unwrap_or(if matches!(mode, Mode::Autonomous) {
+                        .unwrap_or(if matches!(turn_mode, Mode::Autonomous) {
                             "docker"
                         } else {
                             "local"
                         });
-                let policy = canonical_policy(&policy)?;
+                let policy = canonical_policy(turn_policy)?;
                 let execution = daemon
-                    .rpc(
-                        "run/execute",
+                    .execute_with_feedback(
+                        run_id,
                         json!({
                             "repo": repo_string,
                             "run_id": run_id,
@@ -708,6 +792,22 @@ async fn chat(
                     .unwrap_or("integration branch unavailable");
                 let current = daemon.rpc("run/get", json!({"run_id": run_id})).await?;
                 println!("completed · {branch}");
+                let events = daemon
+                    .rpc("event/list", json!({"run_id": run_id, "limit": 1000}))
+                    .await?;
+                let summaries: Vec<_> = events
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|event| event["event_type"] == "task.completed")
+                    .filter_map(|event| event["payload"]["summary"].as_str())
+                    .collect();
+                for summary in &summaries {
+                    println!("{summary}");
+                }
+                if !summaries.is_empty() {
+                    return Ok(summaries.join("\n"));
+                }
                 format!(
                     "run {run_id} completed on {branch}; status={}",
                     current
@@ -735,13 +835,569 @@ async fn chat(
                 continue;
             }
         };
-        transcript.push(("user".into(), input.to_string()));
-        transcript.push(("openforge".into(), summary));
-        if transcript.len() > 24 {
-            transcript.drain(0..transcript.len() - 24);
+        session.transcript.push(("user".into(), input.to_string()));
+        session.transcript.push(("openforge".into(), summary));
+        if session.transcript.len() > 24 {
+            session.transcript.drain(0..session.transcript.len() - 24);
+        }
+        session.save(&session_root)?;
+    }
+    session.save(&session_root)?;
+    Ok(())
+}
+
+struct ReviewPolicy(PathBuf);
+impl Drop for ReviewPolicy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn review_policy(policy: &Path, root: &Path, session: &session::Session) -> Result<ReviewPolicy> {
+    session.save(root)?;
+    let mut policy = AgentPolicy::from_yaml(policy)?;
+    policy.autonomy = AutonomyLevel::Suggest;
+    policy.browser.default = openforge_policy::Decision::Deny;
+    policy.browser.allow.clear();
+    policy.network.default = openforge_policy::Decision::Deny;
+    policy.network.allow.clear();
+    let path = root.join(format!("review-policy-{}.json", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&path)?
+        .write_all(&serde_json::to_vec(&policy)?)?;
+    Ok(ReviewPolicy(path))
+}
+
+fn workspace_diff(repo: &Path, run: Option<Uuid>) -> Result<String> {
+    let mut result = String::new();
+    let mut refs = vec![vec!["HEAD".to_owned()]];
+    if let Some(id) = run {
+        let branch = format!("refs/heads/of/integration/{id}");
+        if ProcessCommand::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "--verify", &branch])
+            .output()?
+            .status
+            .success()
+        {
+            refs.push(vec!["HEAD".into(), branch]);
         }
     }
+    for range in refs {
+        let output = ProcessCommand::new("git")
+            .current_dir(repo)
+            .args(["diff", "--no-ext-diff", "--no-textconv"])
+            .args(&range)
+            .arg("--")
+            .output()?;
+        if !output.status.success() {
+            bail!("git diff failed; the repository needs an initial commit");
+        }
+        if result.len() + output.stdout.len() > 128 * 1024 {
+            bail!("diff exceeds 128 KiB; narrow the changes before reviewing");
+        }
+        result.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    if result.is_empty() {
+        result = "No tracked changes in the workspace or last run".into();
+    }
+    Ok(result)
+}
+
+async fn session_command(
+    daemon: &DaemonClient,
+    input: &str,
+    session: &mut session::Session,
+    mode: &mut Mode,
+    budget: &mut f64,
+    policy: &mut PathBuf,
+    root: &Path,
+) -> Result<bool> {
+    let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
+    let argument = argument.trim();
+    let accepts_argument = matches!(
+        command,
+        "/permissions"
+            | "/approvals"
+            | "/mode"
+            | "/budget"
+            | "/resume"
+            | "/mcp"
+            | "/plan"
+            | "/goal"
+            | "/personality"
+            | "/mention"
+            | "/rename"
+            | "/memories"
+            | "/skills"
+            | "/stop"
+    );
+    if !argument.is_empty() && command.starts_with('/') && !accepts_argument {
+        bail!("{command} does not accept arguments");
+    }
+    match command {
+        "/" | "/help" => terminal::help(),
+        "/status" => {
+            println!(
+                "session: {}\ntitle: {}\nworkspace: {}\nmode: {}\nbudget: USD {:.2}\npolicy: {}\ngoal: {}\npersonality: {}\nmentioned files: {}",
+                session.id,
+                session.title.as_deref().unwrap_or("untitled"),
+                session.workspace.display(),
+                mode.as_str(),
+                budget,
+                policy.display(),
+                session.goal.as_deref().unwrap_or("none"),
+                session.personality.as_deref().unwrap_or("none"),
+                session.mentions.len()
+            );
+            if let Some(id) = session.last_run {
+                print_json(&daemon.rpc("run/get", json!({"run_id": id})).await?)?;
+            }
+        }
+        "/model" => {
+            print_json(&daemon.rpc("model/list", json!({})).await?)?;
+            println!(
+                "Models are configured by the shared daemon. Sevi auto-select routes upstream; this gateway does not expose model/reasoning selection."
+            );
+        }
+        "/permissions" | "/approvals" => {
+            if !argument.is_empty() {
+                let path = canonical_policy(Path::new(argument))?;
+                AgentPolicy::from_yaml(&path)?;
+                *policy = PathBuf::from(path);
+            }
+            println!(
+                "Active policy: {}. Ask decisions stop for approval; changing policy affects future turns.",
+                policy.display()
+            );
+            print_json(&serde_json::to_value(AgentPolicy::from_yaml(&*policy)?)?)?;
+        }
+        "/plan" => {
+            *mode = Mode::Suggest;
+            if argument.is_empty() {
+                println!(
+                    "Planning mode: objectives create plans without execution. Use /mode execute to execute future objectives."
+                );
+            } else {
+                return Ok(false);
+            }
+        }
+        "/mode" => {
+            if !argument.is_empty() {
+                *mode = match argument {
+                    "suggest" => Mode::Suggest,
+                    "edit" => Mode::Edit,
+                    "execute" => Mode::Execute,
+                    _ => bail!("use /mode suggest|edit|execute"),
+                };
+            }
+            println!("Mode: {}", mode.as_str());
+        }
+        "/budget" => {
+            if !argument.is_empty() {
+                let value: f64 = argument.parse().context("use /budget POSITIVE_USD")?;
+                if !value.is_finite() || value <= 0.0 {
+                    bail!("budget must be positive and finite");
+                }
+                *budget = value;
+            }
+            println!("Next-turn run budget: USD {budget:.2}");
+        }
+        "/goal" => {
+            match argument {
+                "" => println!(
+                    "Goal: {}{}",
+                    session.goal.as_deref().unwrap_or("none"),
+                    if session.goal_paused { " (paused)" } else { "" }
+                ),
+                "clear" => {
+                    session.goal = None;
+                    session.goal_paused = false;
+                    println!("Persistent goal cleared");
+                }
+                "pause" => {
+                    session.goal.as_ref().context("No goal is set")?;
+                    session.goal_paused = true;
+                    println!("Persistent goal paused");
+                }
+                "resume" => {
+                    session.goal.as_ref().context("No goal is set")?;
+                    session.goal_paused = false;
+                    println!("Persistent goal resumed");
+                }
+                value => {
+                    let value = value.strip_prefix("edit ").unwrap_or(value).trim();
+                    if value.is_empty() || value.chars().count() > 4000 {
+                        bail!("goal must contain 1 to 4000 characters");
+                    }
+                    session.goal = Some(value.to_string());
+                    session.goal_paused = false;
+                    println!("Persistent goal set");
+                }
+            }
+            session.save(root)?;
+        }
+        "/personality" => {
+            if argument.is_empty() {
+                println!(
+                    "Personality: {}",
+                    session.personality.as_deref().unwrap_or("none")
+                );
+            } else {
+                match argument {
+                    "friendly" | "pragmatic" | "none" => {
+                        session.personality = Some(argument.to_string());
+                        session.save(root)?;
+                        println!("Personality: {argument}");
+                    }
+                    _ => bail!("use /personality friendly|pragmatic|none"),
+                }
+            }
+        }
+        "/mention" => {
+            if argument == "clear" {
+                session.mentions.clear();
+                session.save(root)?;
+                println!("Mentioned files cleared");
+            } else if argument.is_empty() {
+                for path in &session.mentions {
+                    println!("{}", path.display());
+                }
+                if session.mentions.is_empty() {
+                    println!("No files are attached to future objectives");
+                }
+            } else {
+                let relative = validate_mentioned_file(&session.workspace, argument)?;
+                if !session.mentions.contains(&relative) {
+                    session.mentions.push(relative.clone());
+                }
+                session.save(root)?;
+                println!("Attached {}", relative.display());
+            }
+        }
+        "/rename" => {
+            if argument.is_empty() || argument.chars().count() > 120 {
+                bail!("use /rename TITLE (1 to 120 characters)");
+            }
+            session.title = Some(argument.to_string());
+            session.save(root)?;
+            println!("Session renamed: {argument}");
+        }
+        "/diff" => println!("{}", workspace_diff(&session.workspace, session.last_run)?),
+        "/init" => {
+            let path = session.workspace.join("AGENTS.md");
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).context("AGENTS.md already exists or cannot be created; existing instructions are preserved")?;
+            file.write_all(b"# Project instructions\n\nRead the repository documentation before changing code. Preserve existing behavior unless the task explicitly changes it. Follow the surrounding code style. Run the relevant existing tests for each change, and report any checks that could not run. Never commit credentials or claim validation that was not performed.\n")?;
+            println!(
+                "Created {}. These instructions are included in future terminal objectives.",
+                path.display()
+            );
+        }
+        "/review" => return Ok(false),
+        "/new" => {
+            session.save(root)?;
+            *session = session::Session::new(&session.workspace);
+            session.save(root)?;
+            println!("New session: {}", session.id);
+        }
+        "/fork" => {
+            session.save(root)?;
+            session.id = Uuid::new_v4();
+            session.save(root)?;
+            println!("Forked session: {}", session.id);
+        }
+        "/archive" => {
+            let workspace = session.workspace.clone();
+            let archived = session.archive(root)?;
+            *session = session::Session::new(&workspace);
+            session.save(root)?;
+            println!(
+                "Archived session to {}. New session: {}",
+                archived.display(),
+                session.id
+            );
+        }
+        "/delete" => {
+            let workspace = session.workspace.clone();
+            let deleted = session.delete(root)?;
+            *session = session::Session::new(&workspace);
+            session.save(root)?;
+            println!(
+                "Deleted previous session: {deleted}. New session: {}",
+                session.id
+            );
+        }
+        "/resume" => {
+            if argument.is_empty() {
+                session::Session::list(root, &session.workspace)?;
+            } else {
+                let resumed = session::Session::load(
+                    root,
+                    Uuid::parse_str(argument).context("use /resume SESSION_UUID")?,
+                    &session.workspace,
+                )?;
+                session.save(root)?;
+                *session = resumed;
+                println!(
+                    "Resumed {} ({} messages). Current mode and permissions are retained.",
+                    session.id,
+                    session.transcript.len()
+                );
+            }
+        }
+        "/compact" => {
+            let removed = session.transcript.len().saturating_sub(6);
+            session.transcript.drain(..removed);
+            session.save(root)?;
+            println!(
+                "Removed {removed} older messages; retained {}. This is local truncation, not a model-generated summary.",
+                session.transcript.len()
+            );
+        }
+        "/copy" => {
+            let output = session
+                .latest_output()
+                .context("No completed OpenForge output to copy")?;
+            print!("\x1b]52;c;{}\x07", BASE64.encode(output.as_bytes()));
+            io::stdout().flush()?;
+            println!("\nLatest OpenForge output sent to the terminal clipboard");
+        }
+        "/memories" => {
+            let query = if argument == "all" { "" } else { argument };
+            print_json(
+                &daemon
+                    .rpc(
+                        "memory/search",
+                        json!({"scope":"repository","query":query,"limit":100}),
+                    )
+                    .await?,
+            )?;
+        }
+        "/skills" => {
+            let skills = workspace_skills(&session.workspace, argument)?;
+            if skills.is_empty() {
+                println!("No matching SKILL.md files found in the workspace");
+            } else {
+                for skill in skills {
+                    println!("{skill}");
+                }
+            }
+        }
+        "/mcp" => {
+            if argument == "verbose" {
+                let servers = daemon.rpc("mcp/list_servers", json!({})).await?;
+                print_json(&servers)?;
+                for server in servers
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    println!("MCP server: {server}");
+                    print_json(
+                        &daemon
+                            .rpc(
+                                "mcp/list_tools",
+                                json!({"server_name":server,"policy_path":canonical_policy(policy)?}),
+                            )
+                            .await?,
+                    )?;
+                }
+            } else {
+                let (method, params) = if argument.is_empty() {
+                    ("mcp/list_servers", json!({}))
+                } else {
+                    (
+                        "mcp/list_tools",
+                        json!({"server_name": argument, "policy_path": canonical_policy(policy)?}),
+                    )
+                };
+                print_json(&daemon.rpc(method, params).await?)?;
+            }
+        }
+        "/apps" | "/plugins" => print_json(&daemon.rpc("plugins/list", json!({})).await?)?,
+        "/agent" | "/subagents" => {
+            if let Some(id) = session.last_run {
+                println!("Run task agents:");
+                print_json(&daemon.rpc("task/list", json!({"run_id":id})).await?)?;
+            }
+            println!("ACP agent processes:");
+            print_json(&daemon.rpc("acp/list", json!({})).await?)?;
+        }
+        "/ps" => print_json(&daemon.rpc("acp/list", json!({})).await?)?,
+        "/stop" => {
+            if argument.is_empty() {
+                bail!("use /stop PROCESS_UUID|all");
+            }
+            if argument == "all" {
+                let processes = daemon.rpc("acp/list", json!({})).await?;
+                let ids: Vec<String> = processes
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|process| process["process_id"].as_str())
+                    .map(str::to_string)
+                    .collect();
+                for process_id in ids {
+                    let _ = daemon
+                        .rpc("acp/close", json!({"process_id":process_id}))
+                        .await?;
+                }
+                println!("Stopped all ACP processes");
+            } else {
+                let process_id = Uuid::parse_str(argument).context("use /stop PROCESS_UUID|all")?;
+                print_json(
+                    &daemon
+                        .rpc("acp/close", json!({"process_id":process_id}))
+                        .await?,
+                )?;
+            }
+        }
+        "/runs" => print_json(&daemon.rpc("run/list", json!({"limit":20})).await?)?,
+        "/tasks" | "/events" => {
+            let id = session.last_run.context("No run in this session yet")?;
+            print_json(
+                &daemon
+                    .rpc(
+                        if command == "/tasks" {
+                            "task/list"
+                        } else {
+                            "event/list"
+                        },
+                        json!({"run_id": id, "limit":1000}),
+                    )
+                    .await?,
+            )?;
+        }
+        "/usage" => {
+            let id = session.last_run.context("No run in this session yet")?;
+            print_json(&daemon.rpc("budget/snapshot", json!({"run_id":id})).await?)?;
+        }
+        "/debug-config" => {
+            print_json(&json!({
+                "initialize": daemon.rpc("initialize", json!({})).await?,
+                "gateway": daemon.rpc("gateway/status", json!({})).await?,
+                "models": daemon.rpc("model/list", json!({})).await?,
+                "policy_path": canonical_policy(policy)?,
+                "policy": AgentPolicy::from_yaml(&*policy)?
+            }))?;
+        }
+        "/logout" => {
+            print_json(&daemon.rpc("gateway/disconnect", json!({})).await?)?;
+        }
+        "/clear" => {
+            session.transcript.clear();
+            session.save(root)?;
+            println!("conversation context cleared");
+        }
+        "/connect" | "/disconnect" | "/gateway" | "/provider" | "/context" | "/files" | "/tree"
+        | "/pwd" | "/whoami" | "/exit" | "/quit" => return Ok(false),
+        _ if command.starts_with('/') => {
+            println!(
+                "Unknown command {command}. Type / for available commands. No model request was sent."
+            );
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn validate_mentioned_file(workspace: &Path, value: &str) -> Result<PathBuf> {
+    let candidate = workspace.join(value);
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("mentioned path {} does not exist", candidate.display()))?;
+    if !canonical.starts_with(workspace) {
+        bail!("mentioned file must stay inside the workspace");
+    }
+    if !canonical.is_file() {
+        bail!("mentioned path must be a file");
+    }
+    if std::fs::metadata(&canonical)?.len() > 256 * 1024 {
+        bail!("mentioned file exceeds 256 KiB");
+    }
+    Ok(canonical.strip_prefix(workspace)?.to_path_buf())
+}
+
+fn append_mentions(objective: &mut String, session: &session::Session) -> Result<()> {
+    if session.mentions.is_empty() {
+        return Ok(());
+    }
+    objective.push_str("\n\nATTACHED WORKSPACE FILES\n");
+    for relative in &session.mentions {
+        let canonical = session.workspace.join(relative).canonicalize()?;
+        if !canonical.starts_with(&session.workspace) || !canonical.is_file() {
+            bail!("mentioned file {} is no longer valid", relative.display());
+        }
+        if std::fs::metadata(&canonical)?.len() > 256 * 1024 {
+            bail!("mentioned file {} exceeds 256 KiB", relative.display());
+        }
+        objective.push_str(&format!("\n--- {} ---\n", relative.display()));
+        objective.push_str(&std::fs::read_to_string(&canonical).with_context(|| {
+            format!(
+                "mentioned file {} is not valid UTF-8 text",
+                relative.display()
+            )
+        })?);
+    }
     Ok(())
+}
+
+fn workspace_skills(workspace: &Path, filter: &str) -> Result<Vec<String>> {
+    let needle = filter.to_ascii_lowercase();
+    let mut skills = Vec::new();
+    for entry in ignore::WalkBuilder::new(workspace)
+        .hidden(false)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+    {
+        let entry = entry?;
+        if entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == "SKILL.md" {
+            let relative = entry
+                .path()
+                .strip_prefix(workspace)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if needle.is_empty() || relative.to_ascii_lowercase().contains(&needle) {
+                skills.push(relative);
+            }
+        }
+    }
+    skills.sort();
+    Ok(skills)
+}
+
+impl DaemonClient {
+    async fn execute_with_feedback(&self, run_id: Uuid, params: Value) -> Result<Value> {
+        let execution = self.rpc("run/execute", params);
+        tokio::pin!(execution);
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(2),
+        );
+        let mut after = 0;
+        loop {
+            tokio::select! {
+                result = &mut execution => return result,
+                _ = interval.tick() => {
+                    if let Ok(Ok(events)) = tokio::time::timeout(std::time::Duration::from_secs(2), self.rpc("event/list", json!({"run_id":run_id,"after_sequence":after,"limit":100}))).await {
+                        for event in events.as_array().into_iter().flatten() {
+                            after = after.max(event["sequence"].as_i64().unwrap_or(after));
+                            if let Some(kind) = event["event_type"].as_str() { println!("  · {kind}"); }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn is_file_listing(input: &str) -> bool {
@@ -1496,5 +2152,39 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["openforge", "--standalone", "providers"]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    #[test]
+    fn review_policy_denies_mutation_and_is_removed_after_use() {
+        let root = tempfile::tempdir().unwrap();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/policies/development.yaml");
+        let session = session::Session::new(root.path());
+        let temporary = review_policy(&source, root.path(), &session).unwrap();
+        let path = temporary.0.clone();
+        let policy = AgentPolicy::from_yaml(&path).unwrap();
+        use openforge_policy::{CapabilityRequest, Decision};
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::ReadPath("README.md")),
+            Decision::Allow
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::WritePath("README.md")),
+            Decision::Deny
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Process(&["git".into(), "status".into()])),
+            Decision::Deny
+        );
+        assert_eq!(
+            policy.evaluate(CapabilityRequest::Mcp("github/create_issue")),
+            Decision::Deny
+        );
+        drop(temporary);
+        assert!(!path.exists());
     }
 }

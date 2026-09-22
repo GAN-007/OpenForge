@@ -10,7 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 clap.workspace = true
+crossterm = "0.29"
+serde.workspace = true
 ignore.workspace = true
 openforge-core = { path = "../openforge-core" }
 openforge-policy = { path = "../openforge-policy" }
