@@ -6,7 +6,7 @@ From the checkout, run:
 ./setup.sh
 ```
 
-Choose **CLI / terminal**, **IDE**, **native desktop GUI**, or **browser**. The script checks the selected interface's dependencies, installs missing ones, builds the application, starts or reuses a local daemon, then opens the interface. It does not modify your project's files or shell startup files. Builds and downloads can take several minutes on the first launch.
+Choose **CLI / terminal**, **IDE**, **native desktop GUI**, or **browser**. The script checks the selected interface's dependencies, installs missing ones, builds the application, starts or reuses a local daemon, then opens the interface. It installs a user command at `~/.local/bin/openforge` and adds an idempotent PATH entry to Bash/login shell startup files (and existing Zsh configuration). It preserves project files. Builds and downloads can take several minutes on the first launch.
 
 Automatic system package installation supports Debian/Ubuntu with `apt-get`; it uses `sudo` only for missing system packages or an IDE installation. Rust is installed through the official rustup installer if needed. Node 22 binaries are downloaded from nodejs.org and checked against its SHA-256 manifest; pnpm is pinned to the workspace version. Downloaded tools live under `.openforge/tools`, not in the system Node installation. Existing compatible tools are reused. Other Unix systems can provision the reported tools with their package manager and use `--skip-install`. Native Windows is not supported by this Bash bootstrap.
 
@@ -45,13 +45,18 @@ Chat accepts objectives and keeps bounded recent session context. Each objective
 
 Git workspaces are required for execution. For a non-Git folder, chat asks before creating local Git metadata and a baseline commit. That baseline stages the folder's non-ignored files; review `.gitignore` first. No initialization is performed by the launcher itself.
 
-For a short command in your current shell:
+After setup, open a new terminal (or run `export PATH="$HOME/.local/bin:$PATH"` in the existing terminal). From any project folder:
 
 ```bash
-export PATH="/absolute/path/to/OpenForge/target/debug:$PATH"
-export OPENFORGE_DAEMON_URL=http://127.0.0.1:8875
-openforge chat /absolute/project
+openforge
+openforge --help
 ```
+
+With no arguments, `openforge` starts interactive chat for the current directory and starts or reuses the shared daemon. Arguments are forwarded to the Rust CLI unchanged. The launcher references this checkout, so rerun setup if it is moved. Setup refuses to overwrite an unrelated existing `~/.local/bin/openforge` command.
+
+`/files` (also `list all files and folders`) lists the current project's files locally without model calls or creating a run. It respects ignore rules and excludes Git metadata. Failed objectives report an error and leave the terminal open for the next command.
+
+To load a newly built backend, use `./setup.sh --interface cli --restart-daemon`. On Linux this checks the daemon executable, checkout, port and run state before stopping it. It refuses to restart unidentified services or daemons with running tasks; saved gateway credentials are restored by the replacement daemon.
 
 ## IDE and desktop
 
@@ -64,3 +69,7 @@ GUI mode installs the Linux WebKitGTK 4.1 and Tauri development dependencies, st
 Daemon and frontend processes continue running when setup returns, so switching interfaces preserves the session. Their PIDs are printed and logs are in `.openforge/runtime/{daemon,web,desktop-web}.log`. Repeated frontend launches currently create another local frontend process; the daemon is reused. Stop only the printed PIDs you started when finished. A rebuilt binary does not update an already-running daemon: restart it deliberately to load an updated backend. Keys saved by the updated gateway are restored automatically.
 
 The script installs the dependencies needed for local interfaces. Docker, Kubernetes credentials/PVCs, remote model access, JetBrains/Java, and optional evaluation environments are separate services/toolchains, not silently provisioned. It does not grant policy approvals or change deployment settings. Native GUI/IDE opening requires an available desktop session; remote/headless users should use terminal or `--no-open` browser mode.
+
+## Automation
+
+See [GitHub and MCP extensions](automation.md) for connecting GitHub, discovering tools and adding other automation servers.

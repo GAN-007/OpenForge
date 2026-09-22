@@ -10,7 +10,7 @@ use openforge_models::{
     GeminiConfig, GeminiProvider, ModelProvider, ModelRouter, OpenAiCompatibleConfig,
     OpenAiCompatibleProvider,
 };
-use openforge_policy::AgentPolicy;
+use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
 use openforge_protocol::{
     Actor, AutonomyLevel, Budget, CapabilityDomain, ChatMessage, ModelRequest, ModelRequirements,
     ResourceLimits, Run, RunStatus, SandboxSecurityProfile, TaskBudget, TaskNode, TaskRequirements,
@@ -369,7 +369,8 @@ impl Engine {
         }
 
         let mut tasks = Vec::with_capacity(plan.tasks.len());
-        for task in plan.tasks {
+        for mut task in plan.tasks {
+            normalize_planner_resources(&mut task.resources);
             let dependencies = task
                 .depends_on
                 .iter()
@@ -402,7 +403,8 @@ impl Engine {
                 max_attempts: task.max_attempts.max(1),
                 budget: TaskBudget {
                     max_usd: task.max_usd,
-                    max_model_calls: task.max_model_calls.max(1),
+                    // Leave room for one action, a finish decision and two format corrections.
+                    max_model_calls: task.max_model_calls.max(4),
                     max_tool_calls: task.max_tool_calls.max(1),
                     max_wall_seconds: task.resources.wall_seconds.max(1),
                 },
@@ -597,7 +599,7 @@ impl Engine {
                     };
 
                     if let Err(error) = self
-                        .verify_acceptance(&integration, &execution.task, runner_backend)
+                        .verify_acceptance(&integration, &execution.task, runner_backend, &policy)
                         .await
                     {
                         git.reset_hard(&integration, &pre_integration_sha).await?;
@@ -857,13 +859,22 @@ impl Engine {
             max_iterations: 30,
         };
 
-        let result = agent.run(&current, &workspace.path, &lease, context).await;
+        let result = async {
+            let outcome = agent
+                .run(&current, &workspace.path, &lease, context)
+                .await?;
+            if outcome.success {
+                self.verify_with_backend(&backend, &lease, &current, &agent.policy)
+                    .await?;
+            }
+            Ok::<_, anyhow::Error>(outcome)
+        }
+        .await;
         let tool_cleanup = tools.close().await;
 
         let execution = match result {
             Ok(outcome) if outcome.success => {
                 tool_cleanup.context("tool bus cleanup failed")?;
-                self.verify_with_backend(&backend, &lease, &current).await?;
                 let commit = git
                     .commit_all(
                         &workspace,
@@ -952,11 +963,13 @@ impl Engine {
         backend: &Arc<dyn SandboxBackend>,
         lease: &openforge_sandbox::SandboxLease,
         task: &TaskNode,
+        policy: &AgentPolicy,
     ) -> Result<()> {
         for check in &task.acceptance {
             if check.argv.is_empty() {
                 bail!("acceptance command cannot be empty");
             }
+            authorize_acceptance(policy, &check.argv)?;
             let result = backend
                 .exec(
                     lease,
@@ -986,6 +999,7 @@ impl Engine {
         workspace: &GitWorkspace,
         task: &TaskNode,
         runner_backend: RunnerBackend,
+        policy: &AgentPolicy,
     ) -> Result<()> {
         if task.acceptance.is_empty() {
             return Ok(());
@@ -995,7 +1009,9 @@ impl Engine {
         let lease = backend
             .create(&workspace.path, SandboxPolicy::default())
             .await?;
-        let result = self.verify_with_backend(&backend, &lease, task).await;
+        let result = self
+            .verify_with_backend(&backend, &lease, task, policy)
+            .await;
         backend.destroy(lease).await?;
         result
     }
@@ -1097,10 +1113,34 @@ fn default_tool_calls() -> u32 {
     200
 }
 
+fn authorize_acceptance(policy: &AgentPolicy, argv: &[String]) -> Result<()> {
+    match policy.evaluate(CapabilityRequest::Process(argv)) {
+        Decision::Allow => Ok(()),
+        Decision::Ask => bail!("acceptance command requires approval under process policy"),
+        Decision::Deny => bail!("acceptance command denied by process policy"),
+    }
+}
+
+// Model-generated resource estimates must satisfy the runner's minimum allocation.
+// This is applied only to planner output, not operator-supplied sandbox policy.
+fn normalize_planner_resources(resources: &mut ResourceLimits) {
+    if !resources.cpu_cores.is_finite() || resources.cpu_cores <= 0.0 {
+        resources.cpu_cores = 1.0;
+    }
+    resources.memory_mb = resources.memory_mb.max(128);
+    resources.disk_mb = resources.disk_mb.max(64);
+    resources.pids = resources.pids.max(1);
+    resources.wall_seconds = resources.wall_seconds.max(1);
+    resources.max_stdout_bytes = resources.max_stdout_bytes.max(1024);
+    resources.max_stderr_bytes = resources.max_stderr_bytes.max(1024);
+}
+
 fn planner_prompt() -> String {
     r#"You are OpenForge's deterministic engineering planner. Return ONLY JSON:
 {"tasks":[{"key":"unique-key","title":"concise","description":"complete implementation requirements","role":"architect|researcher|backend-engineer|frontend-engineer|database-engineer|devops-engineer|debugger|tester|reviewer|security-reviewer|documentation-engineer","depends_on":[],"required_reviews":[],"acceptance":[["command","arg"]],"capabilities":["filesystem_read","filesystem_write","process"],"resources":{"cpu_cores":2.0,"memory_mb":4096,"disk_mb":20480,"pids":256,"wall_seconds":2700,"max_stdout_bytes":8388608,"max_stderr_bytes":8388608},"preferred_languages":[],"exclusive_resources":[],"max_attempts":2,"max_model_calls":30,"max_tool_calls":200,"max_usd":1.0}]}
-Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
+Allocate at least 4 max_model_calls per task to allow an action, verification and format corrections.
+Resource minimums: cpu_cores > 0, memory_mb >= 128, disk_mb >= 64, pids >= 1, wall_seconds >= 1, output byte limits >= 1024. These apply even to read-only tasks.
+Build a finite acyclic implementation DAG. Every coding task must have executable acceptance checks appropriate to the repository. For read-only inspection/reporting with no code changes, use an empty acceptance array; the agent verifies by reading. Acceptance entries are real installed command argv arrays, never capability names such as filesystem_read or model tool names. Do not invent commands. Keep independent tasks parallelizable. Put integration/testing after implementation and security review after security-sensitive work. Do not invent external credentials or services."#
         .into()
 }
 
@@ -1139,4 +1179,53 @@ async fn git_output(repo: &Path, args: &[&str]) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into())
+}
+
+#[cfg(test)]
+mod planner_resource_tests {
+    use super::*;
+
+    #[test]
+    fn acceptance_commands_obey_process_policy() {
+        let policy = AgentPolicy::from_yaml(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/policies/development.yaml"),
+        )
+        .unwrap();
+        assert!(authorize_acceptance(&policy, &["git".into(), "status".into()]).is_ok());
+        assert!(authorize_acceptance(&policy, &["git".into(), "push".into()]).is_err());
+        assert!(
+            authorize_acceptance(&policy, &["filesystem_read".into(), "README.md".into()])
+                .unwrap_err()
+                .to_string()
+                .contains("requires approval")
+        );
+    }
+
+    #[test]
+    fn read_only_zero_disk_estimates_meet_runner_minimums() {
+        let mut resources = ResourceLimits {
+            cpu_cores: 0.0,
+            memory_mb: 0,
+            disk_mb: 0,
+            pids: 0,
+            wall_seconds: 0,
+            max_stdout_bytes: 0,
+            max_stderr_bytes: 0,
+        };
+        normalize_planner_resources(&mut resources);
+        let policy = SandboxPolicy {
+            cpus: resources.cpu_cores,
+            memory_mb: resources.memory_mb,
+            disk_mb: resources.disk_mb,
+            pids_limit: resources.pids,
+            max_stdout_bytes: resources.max_stdout_bytes,
+            max_stderr_bytes: resources.max_stderr_bytes,
+            ..Default::default()
+        };
+        policy.validate().unwrap();
+        let mut normal = ResourceLimits::default();
+        let previous = serde_json::to_value(&normal).unwrap();
+        normalize_planner_resources(&mut normal);
+        assert_eq!(serde_json::to_value(normal).unwrap(), previous);
+    }
 }

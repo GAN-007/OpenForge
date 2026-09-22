@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# Vite requires esbuild; other dependency lifecycle scripts remain blocked.
+onlyBuiltDependencies:
+  - esbuild

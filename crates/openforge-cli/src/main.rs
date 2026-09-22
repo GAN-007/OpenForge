@@ -116,6 +116,10 @@ enum Command {
         after: i64,
     },
     Providers,
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     Gateway {
         #[command(subcommand)]
         command: GatewayCommand,
@@ -123,6 +127,20 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    Servers,
+    Tools {
+        server: String,
+    },
+    Call {
+        server: String,
+        tool: String,
+        #[arg(default_value = "{}")]
+        arguments: String,
     },
 }
 
@@ -482,6 +500,21 @@ async fn run_daemon(daemon: &DaemonClient, command: Command) -> Result<()> {
             let models = daemon.rpc("model/list", json!({})).await?;
             print_json(&json!({"providers": providers, "models": models}))?;
         }
+        Command::Mcp { command } => {
+            let (method, params) = match command {
+                McpCommand::Servers => ("mcp/list_servers", json!({})),
+                McpCommand::Tools { server } => ("mcp/list_tools", json!({"server_name": server})),
+                McpCommand::Call {
+                    server,
+                    tool,
+                    arguments,
+                } => (
+                    "mcp/call_tool",
+                    json!({"server_name": server, "tool_name": tool, "arguments": serde_json::from_str::<Value>(&arguments).context("invalid tool arguments JSON")?}),
+                ),
+            };
+            print_json(&daemon.rpc(method, params).await?)?;
+        }
         Command::Gateway { command } => gateway_command(daemon, command).await?,
         Command::Memory { command } => memory_daemon(daemon, command).await?,
         Command::Init { .. } => unreachable!(),
@@ -542,10 +575,25 @@ async fn chat(
             continue;
         }
 
+        if is_file_listing(input) {
+            match workspace_listing(&repo) {
+                Ok(entries) => {
+                    println!("Workspace files and folders (respects ignore rules; excludes .git):");
+                    for entry in entries {
+                        println!("{entry}");
+                    }
+                }
+                Err(error) => eprintln!("Could not list workspace: {error}"),
+            }
+            continue;
+        }
         match input {
             "/exit" | "/quit" => break,
             "/help" => {
                 println!("/help        show terminal commands");
+                println!(
+                    "/files       list workspace files/folders locally without a model request"
+                );
                 println!("/gateway     show the shared Sevi gateway status");
                 println!("/connect     enter your Sevi key without echoing it");
                 println!("/disconnect  disconnect the shared Sevi provider");
@@ -556,19 +604,31 @@ async fn chat(
                 continue;
             }
             "/connect" => {
-                gateway_command(daemon, GatewayCommand::Connect { api_key: None }).await?;
+                if let Err(error) =
+                    gateway_command(daemon, GatewayCommand::Connect { api_key: None }).await
+                {
+                    eprintln!("Connection failed: {error}");
+                }
                 continue;
             }
             "/disconnect" => {
-                gateway_command(daemon, GatewayCommand::Disconnect).await?;
+                if let Err(error) = gateway_command(daemon, GatewayCommand::Disconnect).await {
+                    eprintln!("Disconnect failed: {error}");
+                }
                 continue;
             }
             "/gateway" => {
-                print_json(&daemon.rpc("gateway/status", json!({})).await?)?;
+                match daemon.rpc("gateway/status", json!({})).await {
+                    Ok(value) => print_json(&value)?,
+                    Err(error) => eprintln!("Request failed: {error}"),
+                }
                 continue;
             }
             "/provider" => {
-                print_json(&daemon.rpc("model/list", json!({})).await?)?;
+                match daemon.rpc("model/list", json!({})).await {
+                    Ok(value) => print_json(&value)?,
+                    Err(error) => eprintln!("Request failed: {error}"),
+                }
                 continue;
             }
             "/context" => {
@@ -585,67 +645,81 @@ async fn chat(
             _ => {}
         }
 
-        let objective = conversation_objective(&transcript, input);
-        let run = daemon
-            .rpc(
-                "run/create",
-                json!({
-                    "repo": repo_string,
-                    "objective": objective,
-                    "autonomy": mode.as_str(),
-                    "budget_usd": budget
-                }),
-            )
-            .await?;
-        let run_id = result_uuid(&run, "id")?;
-        let tasks = daemon
-            .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
-            .await?;
-        let task_count = tasks.as_array().map_or(0, Vec::len);
-        println!("planned {task_count} task(s) · run {run_id}");
-
-        let summary = if mode.executes() {
-            let selected =
-                runner
-                    .map(Runner::as_str)
-                    .unwrap_or(if matches!(mode, Mode::Autonomous) {
-                        "docker"
-                    } else {
-                        "local"
-                    });
-            let policy = canonical_policy(&policy)?;
-            let execution = daemon
+        let outcome: Result<String> = async {
+            let objective = conversation_objective(&transcript, input);
+            let run = daemon
                 .rpc(
-                    "run/execute",
+                    "run/create",
                     json!({
                         "repo": repo_string,
-                        "run_id": run_id,
-                        "policy_path": policy,
-                        "runner_backend": selected
+                        "objective": objective,
+                        "autonomy": mode.as_str(),
+                        "budget_usd": budget
                     }),
                 )
                 .await?;
-            let branch = execution
-                .get("integration_branch")
-                .and_then(Value::as_str)
-                .unwrap_or("integration branch unavailable");
-            let current = daemon.rpc("run/get", json!({"run_id": run_id})).await?;
-            println!("completed · {branch}");
-            format!(
-                "run {run_id} completed on {branch}; status={}",
-                current
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-            )
-        } else {
-            println!(
-                "plan ready; mode {} does not execute changes",
-                mode.as_str()
-            );
-            format!("run {run_id} planned {task_count} task(s) without execution")
-        };
+            let run_id = result_uuid(&run, "id")?;
+            println!("run {run_id}");
+            let tasks = daemon
+                .rpc("run/plan", json!({"repo": repo_string, "run_id": run_id}))
+                .await?;
+            let task_count = tasks.as_array().map_or(0, Vec::len);
+            println!("planned {task_count} task(s) · run {run_id}");
 
+            let summary = if mode.executes() {
+                let selected =
+                    runner
+                        .map(Runner::as_str)
+                        .unwrap_or(if matches!(mode, Mode::Autonomous) {
+                            "docker"
+                        } else {
+                            "local"
+                        });
+                let policy = canonical_policy(&policy)?;
+                let execution = daemon
+                    .rpc(
+                        "run/execute",
+                        json!({
+                            "repo": repo_string,
+                            "run_id": run_id,
+                            "policy_path": policy,
+                            "runner_backend": selected
+                        }),
+                    )
+                    .await?;
+                let branch = execution
+                    .get("integration_branch")
+                    .and_then(Value::as_str)
+                    .unwrap_or("integration branch unavailable");
+                let current = daemon.rpc("run/get", json!({"run_id": run_id})).await?;
+                println!("completed · {branch}");
+                format!(
+                    "run {run_id} completed on {branch}; status={}",
+                    current
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                )
+            } else {
+                println!(
+                    "plan ready; mode {} does not execute changes",
+                    mode.as_str()
+                );
+                format!("run {run_id} planned {task_count} task(s) without execution")
+            };
+
+            Ok(summary)
+        }
+        .await;
+        let summary = match outcome {
+            Ok(summary) => summary,
+            Err(error) => {
+                eprintln!(
+                    "Request failed: {error}. The terminal remains open; use /files, /gateway or another objective."
+                );
+                continue;
+            }
+        };
         transcript.push(("user".into(), input.to_string()));
         transcript.push(("openforge".into(), summary));
         if transcript.len() > 24 {
@@ -653,6 +727,55 @@ async fn chat(
         }
     }
     Ok(())
+}
+
+fn is_file_listing(input: &str) -> bool {
+    let normalized = input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.trim_end_matches(['.', '!']),
+        "/files" | "/tree" | "list all files and folders" | "list files and folders"
+    )
+}
+
+fn workspace_listing(repo: &Path) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    for entry in ignore::WalkBuilder::new(repo)
+        .hidden(false)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+    {
+        let entry = entry.context("walk workspace")?;
+        if entry.depth() == 0 {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(repo)?;
+        let mut display = relative
+            .to_string_lossy()
+            .chars()
+            .flat_map(|character| {
+                if character.is_control() {
+                    character.escape_default().collect::<Vec<_>>()
+                } else {
+                    vec![character]
+                }
+            })
+            .collect::<String>();
+        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            display.push('/');
+        }
+        entries.push(display);
+        if entries.len() >= 50_000 {
+            bail!("workspace listing exceeds 50,000 entries; narrow the project path");
+        }
+    }
+    entries.sort();
+    Ok(entries)
 }
 
 async fn gateway_command(daemon: &DaemonClient, command: GatewayCommand) -> Result<()> {
@@ -733,7 +856,10 @@ async fn memory_daemon(daemon: &DaemonClient, command: MemoryCommand) -> Result<
 }
 
 async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
-    if matches!(&command, Command::Chat { .. } | Command::Gateway { .. }) {
+    if matches!(
+        &command,
+        Command::Chat { .. } | Command::Gateway { .. } | Command::Mcp { .. }
+    ) {
         bail!("chat and gateway commands require the shared OpenForge daemon");
     }
 
@@ -849,7 +975,10 @@ async fn run_standalone(config_path: PathBuf, command: Command) -> Result<()> {
                 print_json(&json!({"deleted": deleted}))?;
             }
         },
-        Command::Init { .. } | Command::Chat { .. } | Command::Gateway { .. } => unreachable!(),
+        Command::Init { .. }
+        | Command::Chat { .. }
+        | Command::Gateway { .. }
+        | Command::Mcp { .. } => unreachable!(),
     }
 
     Ok(())

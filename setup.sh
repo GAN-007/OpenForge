@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$PWD"
-INTERFACE=""; INSTALL=1; BUILD=1; OPEN=1; CHECK=0; INSTALL_ONLY=0
+INTERFACE=""; INSTALL=1; BUILD=1; OPEN=1; CHECK=0; INSTALL_ONLY=0; RESTART=0
 DAEMON_URL="${OPENFORGE_DAEMON_URL:-}"
 usage() {
   cat <<'HELP'
@@ -16,6 +16,7 @@ Usage: ./setup.sh [options]
   --skip-build                   Use existing compiled outputs
   --install-only                 Install/build without launching
   --no-open                      Print browser URL without opening a window
+  --restart-daemon               Restart this checkout's idle daemon after building
   --help                         Show this help
 
 Automatic system installation supports Debian/Ubuntu (sudo may be required).
@@ -34,6 +35,7 @@ while (($#)); do
     --skip-build) BUILD=0; shift;;
     --install-only) INSTALL_ONLY=1; shift;;
     --no-open) OPEN=0; shift;;
+    --restart-daemon) RESTART=1; shift;;
     --help|-h) usage; exit 0;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2;;
   esac
@@ -61,7 +63,7 @@ export PATH="$TOOLS/node/bin:$TOOLS/pnpm/bin:${CARGO_HOME:-$HOME/.cargo}/bin:$PA
 node_ok() { command -v node >/dev/null && node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>=22 && (a!==22 || b>=12)?0:1)' >/dev/null 2>&1; }
 rust_ok() { command -v rustc >/dev/null && rustc --version | awk '{split($2,v,".");exit !(v[1]>1 || (v[1]==1 && v[2]>=88))}'; }
 if ((CHECK)); then
-  for tool in git curl python3 cc pkg-config cargo rustc node pnpm; do
+  for tool in git gh curl python3 cc pkg-config cargo rustc node pnpm; do
     if command -v "$tool" >/dev/null; then printf '%-12s %s\n' "$tool" "$(command -v "$tool")"; else printf '%-12s MISSING\n' "$tool"; fi
   done
   node_ok && echo 'Node >=22.12: OK' || echo 'Node >=22.12: REQUIRED'
@@ -73,12 +75,13 @@ trap 'echo "Setup failed at line $LINENO. Resolve the reported error and rerun .
 mkdir -p "$TOOLS" "$ROOT/.openforge/runtime"
 if ((INSTALL)); then
   if command -v apt-get >/dev/null && command -v dpkg-query >/dev/null; then
-    packages=(build-essential pkg-config libssl-dev git curl ca-certificates python3 xz-utils)
+    packages=(build-essential pkg-config libssl-dev git gh curl ca-certificates python3 xz-utils)
     if [[ "$INTERFACE" == gui ]]; then packages+=(libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev file); fi
     if [[ "$INTERFACE" != cli ]]; then packages+=(xdg-utils); fi
     missing=()
     for package in "${packages[@]}"; do
       # Some distributions provide these commands through equivalent packages.
+      if [[ "$package" == gh ]] && command -v gh >/dev/null; then continue; fi
       if [[ "$package" == pkg-config ]] && command -v pkg-config >/dev/null; then continue; fi
       if [[ "$package" == build-essential ]] && command -v cc >/dev/null && command -v c++ >/dev/null && command -v make >/dev/null; then continue; fi
       [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" == 'install ok installed' ]] || missing+=("$package")
@@ -143,8 +146,10 @@ if ((BUILD)); then
   cargo build --locked -p openforge -p openforge-daemon
   pnpm build
 fi
+python3 "$ROOT/scripts/install_cli.py"
 ((INSTALL_ONLY)) && { echo 'OpenForge dependencies and builds are ready.'; exit 0; }
 args=(--interface "$INTERFACE" --project "$PROJECT")
 [[ -z "$DAEMON_URL" ]] || args+=(--daemon-url "$DAEMON_URL")
 ((OPEN)) || args+=(--no-open)
+((RESTART)) && args+=(--restart-daemon)
 exec python3 "$ROOT/scripts/launch.py" "${args[@]}"

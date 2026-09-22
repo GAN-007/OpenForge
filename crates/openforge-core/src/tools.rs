@@ -41,6 +41,53 @@ impl ToolBus {
         self.mcp_servers.contains_key(name)
     }
 
+    pub async fn mcp_catalog(&self, policy: &openforge_policy::AgentPolicy) -> Value {
+        let mut catalog = Vec::new();
+        let mut servers: Vec<_> = self.mcp_servers.values().collect();
+        servers.sort_by_key(|server| &server.name);
+        for server in servers {
+            let subject = format!("{}/tools/list", server.name);
+            if policy.evaluate(openforge_policy::CapabilityRequest::Mcp(&subject))
+                != openforge_policy::Decision::Allow
+            {
+                continue;
+            }
+            let result = async {
+                let mut config = McpProcessConfig::new(server.program.clone(), server.args.clone());
+                config.cwd = server.cwd.as_ref().map(PathBuf::from);
+                config.environment = server.environment.clone();
+                config.request_timeout = Duration::from_secs(server.timeout_seconds.clamp(1, 30));
+                config.max_response_bytes = server.max_response_bytes.clamp(1024, 256 * 1024);
+                let mut client = McpStdioClient::spawn_with_config(config).await?;
+                let result = async {
+                    client
+                        .initialize("openforge", env!("CARGO_PKG_VERSION"))
+                        .await?;
+                    client.list_tools().await
+                }
+                .await;
+                let _ = client.shutdown().await;
+                result
+            }
+            .await;
+            match result {
+                Ok(tools) => {
+                    for tool in tools {
+                        let subject = format!("{}/{}", server.name, tool.name);
+                        if policy.evaluate(openforge_policy::CapabilityRequest::Mcp(&subject))
+                            == openforge_policy::Decision::Allow
+                        {
+                            catalog.push(json!({"server": server.name, "tool": tool}));
+                        }
+                    }
+                }
+                Err(_) => catalog
+                    .push(json!({"server": server.name, "error": "Tool discovery unavailable"})),
+            }
+        }
+        json!(catalog)
+    }
+
     pub async fn mcp_call(
         &self,
         server_name: &str,
@@ -141,5 +188,44 @@ impl ToolBus {
             );
         }
         Ok(slot.as_mut().expect("browser initialized"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openforge_policy::AgentPolicy;
+
+    #[tokio::test]
+    async fn bundled_github_discovery_exposes_only_policy_allowed_tools() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let server = McpServerConfig {
+            name: "github".into(),
+            program: "python3".into(),
+            args: vec![
+                root.join("plugins/builtin/github/server.py")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+            cwd: None,
+            environment: Default::default(),
+            timeout_seconds: 5,
+            max_response_bytes: 65536,
+        };
+        let bus = ToolBus::new(vec![server], BrowserWorkerConfig::default()).unwrap();
+        let policy = AgentPolicy::from_yaml(root.join("config/policies/development.yaml")).unwrap();
+        let catalog = bus.mcp_catalog(&policy).await;
+        let tools = catalog.as_array().unwrap();
+        assert_eq!(tools.len(), 4);
+        assert!(
+            tools
+                .iter()
+                .any(|entry| entry["tool"]["name"] == "get_repository")
+        );
+        assert!(
+            !tools
+                .iter()
+                .any(|entry| entry["tool"]["name"] == "create_issue")
+        );
     }
 }

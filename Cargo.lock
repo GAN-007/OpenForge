@@ -1006,11 +1006,13 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "ignore",
  "openforge-core",
  "openforge-policy",
  "openforge-protocol",
  "reqwest",
  "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]
@@ -1176,6 +1178,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "openforge-protocol",
  "reqwest",
  "serde",

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -94,6 +95,69 @@ def daemon_url(explicit: str | None) -> str:
     return url
 
 
+def owned_daemon_pid(url: str) -> int:
+    """Find the process belonging to this checkout and endpoint."""
+    port = urlparse(local_url(url)).port or 80
+    expected = ROOT / 'target/debug/openforge-daemon'
+    candidates = []
+    proc = Path('/proc')
+    if not proc.is_dir():
+        raise RuntimeError('Automatic restart requires Linux /proc; stop your daemon manually on this OS')
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = str((entry / 'exe').resolve()).removesuffix(' (deleted)')
+            args = (entry / 'cmdline').read_bytes().split(b'\0')
+            listen = args[args.index(b'--listen') + 1].decode()
+            if (executable == str(expected) and (entry / 'cwd').resolve() == ROOT
+                    and listen in (f'127.0.0.1:{port}', f'localhost:{port}')):
+                candidates.append(int(entry.name))
+        except (OSError, ValueError, IndexError, UnicodeError):
+            continue
+    if len(candidates) != 1:
+        raise RuntimeError('Cannot identify exactly one daemon owned by this checkout; restart it manually')
+    return candidates[0]
+
+
+def restart_daemon(url: str) -> str:
+    """Restart only an idle daemon belonging to this checkout, never another service."""
+    pid = owned_daemon_pid(url)
+    port = urlparse(url).port or 80
+    expected = ROOT / "target/debug/openforge-daemon"
+    offset = 0
+    while True:
+        headers = {'Content-Type': 'application/json'}
+        token = os.environ.get('OPENFORGE_API_TOKEN')
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        request = Request(url + '/v1/rpc', data=json.dumps({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'run/list',
+            'params': {'limit': 1000, 'offset': offset}}).encode(), headers=headers)
+        with HTTP.open(request, timeout=5) as response:
+            payload = json.load(response)
+        runs = payload.get('result')
+        if not isinstance(runs, list):
+            raise RuntimeError('Cannot verify daemon inactivity; restart refused')
+        if any(run.get('status') in ('running', 'executing') for run in runs):
+            raise RuntimeError('Daemon has active runs; finish them before restarting')
+        if len(runs) < 1000:
+            break
+        offset += 1000
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not health(url):
+            break
+        time.sleep(.1)
+    else:
+        raise RuntimeError('Daemon did not stop; no second daemon was started')
+    process = spawn([str(expected), '--config', str(ROOT / 'openforge.yaml'),
+                     '--listen', f'127.0.0.1:{port}'], 'daemon', os.environ.copy())
+    wait_ready(process, lambda: health(url), 'daemon')
+    print('Restarted daemon; saved gateway credentials are restored automatically.')
+    return url
+
+
 def frontend(daemon: str, desktop: bool = False) -> str:
     package = '@openforge/desktop' if desktop else '@openforge/web-console'
     name = 'desktop-web' if desktop else 'web'
@@ -136,12 +200,15 @@ def main() -> None:
     parser.add_argument('--project', type=Path, default=Path.cwd())
     parser.add_argument('--daemon-url')
     parser.add_argument('--no-open', action='store_true')
+    parser.add_argument('--restart-daemon', action='store_true')
     args = parser.parse_args()
     project = args.project.resolve(strict=True)
     if not project.is_dir():
         raise ValueError('Project must be a directory')
     RUNTIME.mkdir(parents=True, exist_ok=True)
     daemon = daemon_url(args.daemon_url)
+    if args.restart_daemon:
+        daemon = restart_daemon(daemon)
     print(f'Shared daemon: {daemon}', flush=True)
     print('Background services remain running after this launcher exits.', flush=True)
     if args.interface == 'cli':

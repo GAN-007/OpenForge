@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+ignore.workspace = true
 openforge-core = { path = "../openforge-core" }
 openforge-policy = { path = "../openforge-policy" }
 openforge-protocol = { path = "../openforge-protocol" }
@@ -21,3 +22,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+tempfile = "3"

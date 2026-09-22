@@ -702,6 +702,15 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
         "acp/list" => Ok(serde_json::to_value(
             state.engine.store.list_acp_processes()?,
         )?),
+        "mcp/list_servers" => Ok(json!(
+            state
+                .engine
+                .config
+                .mcp_servers
+                .iter()
+                .map(|server| &server.name)
+                .collect::<Vec<_>>()
+        )),
         "mcp/list_tools" => {
             let server_name = required_string(&request.params, "server_name")?;
             enforce_mcp_policy(
@@ -726,7 +735,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .unwrap_or_else(|| json!({}));
             enforce_mcp_policy(
                 &request.params,
-                &tool_name,
+                &format!("{server_name}/{tool_name}"),
                 &format!("MCP tool {tool_name}"),
             )?;
             state

@@ -78,6 +78,12 @@ network:
 
 mcp:
   default: ask
+  allow:
+    - "github/tools/list"
+    - "github/get_repository"
+    - "github/list_issues"
+    - "github/list_pull_requests"
+    - "github/list_workflow_runs"
 
 acp:
   default: ask
