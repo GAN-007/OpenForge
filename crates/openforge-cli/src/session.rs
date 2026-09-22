@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -192,6 +192,11 @@ mod tests {
         let replacement = Session::new(Path::new("/project"));
         replacement.save(temp.path()).unwrap();
         assert!(replacement.delete(temp.path()).unwrap());
-        assert!(!temp.path().join(format!("{}.json", replacement.id)).exists());
+        assert!(
+            !temp
+                .path()
+                .join(format!("{}.json", replacement.id))
+                .exists()
+        );
     }
 }
