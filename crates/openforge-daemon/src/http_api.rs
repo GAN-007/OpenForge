@@ -349,6 +349,7 @@ pub(crate) mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
         let mut config = state.engine.config.clone();
+        config.providers[0].kind = "openai-compatible".into();
         config.providers[0].base_url = format!("http://{address}");
         config.providers[0].models[0].input_usd_per_million = 1.0;
         config.providers[0].models[0].latency_score = 0.0;

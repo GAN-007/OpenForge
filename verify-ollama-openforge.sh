@@ -26,7 +26,7 @@ mapfile -t DECLARED < <(
     inp && /^ *- *id:/ {gsub(/^ *- *id: *| *$/,"",$0); print}
   ' "$CONFIG"
 )
-(("${#DECLARED[@]}" > 0)) || { err "no configured models found"; exit 1; }
+(( ${#DECLARED[@]} > 0 )) || { err "no configured models found"; exit 1; }
 
 missing=0
 for model in "${DECLARED[@]}"; do
@@ -64,7 +64,9 @@ ok "OpenForge daemon healthy"
 
 rpc() {
   local id="$1" method="$2" params="$3"
-  curl -sf "$DAEMON_URL/v1/rpc" -H 'content-type: application/json'     -d "{"jsonrpc":"2.0","id":$id,"method":"$method","params":$params}"
+  local payload
+  payload="$(jq -nc --argjson id "$id" --arg method "$method" --argjson params "$params"     '{jsonrpc:"2.0",id:$id,method:$method,params:$params}')"
+  curl -sf "$DAEMON_URL/v1/rpc"     -H 'content-type: application/json'     --data-binary "$payload"
 }
 
 rpc 1 model/list '{}' | jq -e '.result | length > 0' >/dev/null
