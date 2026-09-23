@@ -7,14 +7,26 @@ import {
 } from "react";
 import {
   OpenForgeClient,
+  listOllamaModels,
+  preflightOllamaModel,
+  pullOllamaModel,
   type EventEnvelope,
   type EventIntegrityReport,
+  type ModelSpec,
+  type OllamaInventory,
+  type OllamaPreflight,
   type Run,
   type SearchHit,
   type TaskNode,
   type TelemetrySnapshot,
 } from "@openforge/sdk";
 import { EmptyState, GatewaySettings, Panel, StatusPill } from "@openforge/ui";
+
+function formatBytes(value: number | null | undefined): string {
+  if (value == null) return "unavailable";
+  const gib = value / (1024 ** 3);
+  return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${(value / (1024 ** 2)).toFixed(0)} MiB`;
+}
 
 export function App() {
   const [apiToken, setApiToken] = useState(
@@ -41,6 +53,12 @@ export function App() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [error, setError] = useState("");
+  const [configuredModels, setConfiguredModels] = useState<ModelSpec[]>([]);
+  const [ollamaInventory, setOllamaInventory] = useState<OllamaInventory | null>(null);
+  const [ollamaPreflight, setOllamaPreflight] = useState<Record<string, OllamaPreflight>>({});
+  const [ollamaInput, setOllamaInput] = useState("");
+  const [ollamaBusy, setOllamaBusy] = useState(false);
+  const [ollamaError, setOllamaError] = useState("");
 
   const refreshVersion = useRef(0);
   const refresh = useCallback(async () => {
@@ -80,11 +98,55 @@ export function App() {
     }
   }, [client, runId]);
 
+  const refreshOllama = useCallback(async () => {
+    setOllamaBusy(true);
+    try {
+      const catalog = await client.listModels();
+      const local = catalog.filter((model) => model.provider === "local");
+      setConfiguredModels(local);
+      const inventory = await listOllamaModels(client);
+      setOllamaInventory(inventory);
+      const checks = await Promise.all(
+        local.map(async (model) => {
+          try {
+            const check = await preflightOllamaModel(client, model.model, model.context_tokens);
+            return [model.model, check] as const;
+          } catch (err) {
+            return [
+              model.model,
+              {
+                ready: false,
+                installed: false,
+                model: model.model,
+                context_tokens: model.context_tokens,
+                available_memory_bytes: inventory.available_memory_bytes,
+                estimated_required_memory_bytes: null,
+                message: err instanceof Error ? err.message : String(err),
+              } satisfies OllamaPreflight,
+            ] as const;
+          }
+        }),
+      );
+      setOllamaPreflight(Object.fromEntries(checks));
+      setOllamaError("");
+    } catch (err) {
+      setOllamaInventory(null);
+      setOllamaPreflight({});
+      setOllamaError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOllamaBusy(false);
+    }
+  }, [client]);
+
   useEffect(() => {
     void refresh();
     const id = window.setInterval(() => void refresh(), 5000);
     return () => { window.clearInterval(id); ++refreshVersion.current; };
   }, [refresh]);
+
+  useEffect(() => {
+    void refreshOllama();
+  }, [refreshOllama]);
 
   useEffect(() => {
     setRun(null);
@@ -156,6 +218,19 @@ export function App() {
     }
   }
 
+  async function pullModel(model: string) {
+    if (!model.trim()) return;
+    setOllamaBusy(true);
+    try {
+      await pullOllamaModel(client, model.trim());
+      setOllamaInput("");
+      await refreshOllama();
+    } catch (err) {
+      setOllamaError(err instanceof Error ? err.message : String(err));
+      setOllamaBusy(false);
+    }
+  }
+
   function persistToken(value: string) {
     setApiToken(value);
     if (value) {
@@ -213,6 +288,51 @@ export function App() {
 
       <Panel title="Model connection">
         <GatewaySettings client={client} />
+      </Panel>
+
+      <Panel title="Local Ollama models" className="ollama-models">
+        <div className="ollama-summary">
+          <div>
+            <strong>{ollamaInventory ? `${ollamaInventory.models.length} installed` : "Ollama unavailable"}</strong>
+            <span>Available RAM: {formatBytes(ollamaInventory?.available_memory_bytes)}</span>
+          </div>
+          <div className="ollama-actions">
+            <input
+              aria-label="Ollama model to pull"
+              value={ollamaInput}
+              onChange={(event) => setOllamaInput(event.target.value)}
+              placeholder="model:tag"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void pullModel(ollamaInput);
+              }}
+            />
+            <button disabled={ollamaBusy || !ollamaInput.trim()} onClick={() => void pullModel(ollamaInput)}>Pull</button>
+            <button disabled={ollamaBusy} onClick={() => void refreshOllama()}>{ollamaBusy ? "Checking…" : "Refresh"}</button>
+          </div>
+        </div>
+        {ollamaError && <div className="error">{ollamaError}</div>}
+        {configuredModels.length ? (
+          <div className="ollama-grid">
+            {configuredModels.map((model) => {
+              const installed = ollamaInventory?.models.find((item) => item.name === model.model || item.model === model.model);
+              const check = ollamaPreflight[model.model];
+              return (
+                <article className="ollama-card" key={`${model.provider}:${model.model}`}>
+                  <div className="ollama-card__head">
+                    <strong>{model.model}</strong>
+                    <span className={check?.ready ? "fit fit--ok" : "fit"}>{check?.ready ? "fits" : installed ? "check RAM" : "not installed"}</span>
+                  </div>
+                  <span>{model.family} · {(model.context_tokens / 1024).toFixed(0)}k context · {model.supports_tools ? "tools" : "no tools"}</span>
+                  <span>Model size: {formatBytes(installed?.size)} · estimated: {formatBytes(check?.estimated_required_memory_bytes)}</span>
+                  <small>{check?.message ?? "Run refresh to preflight this model."}</small>
+                  {!installed && <button disabled={ollamaBusy} onClick={() => void pullModel(model.model)}>Pull {model.model}</button>}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyState>No local provider models are configured.</EmptyState>
+        )}
       </Panel>
 
       <div className="grid">

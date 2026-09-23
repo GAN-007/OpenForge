@@ -1,0 +1,23 @@
+suite: ollama-local
+version: 1
+description: >-
+  Regression contract for zero-cost local model routing and Ollama fallback behavior.
+cases:
+  - id: zero-cost-model-remains-eligible
+    requirements:
+      max_cost_usd: 0
+      requires_tools: false
+      requires_structured_output: true
+    expected: zero-cost configured models remain eligible when every hosted-cost term is zero
+  - id: tool-task-excludes-deepseek-coder
+    requirements:
+      requires_tools: true
+    expected: qwen2.5-coder:7b is eligible and DeepSeek local models are excluded
+  - id: structured-task-excludes-deepseek-r1
+    requirements:
+      requires_structured_output: true
+    expected: deepseek-r1:7b is excluded from structured-output work
+  - id: memory-preflight-fallback
+    expected: an installed model that exceeds available RAM fails preflight and the fabric tries the next eligible model
+  - id: native-api-fallback
+    expected: a missing Ollama native /api/chat surface falls back to the existing OpenAI-compatible /v1 path

@@ -1,0 +1,33 @@
+{
+  "schema": "openforge.plugin/v2",
+  "id": "dev.openforge.ollama",
+  "version": "0.2.0",
+  "runtime": "mcp",
+  "entrypoint": "plugins/builtin/ollama/server.py",
+  "api": ">=0.2 <1.0",
+  "capabilities": {
+    "filesystem": [],
+    "network": [
+      "http://127.0.0.1:11434/**",
+      "http://localhost:11434/**",
+      "http://host.docker.internal:11434/**"
+    ],
+    "secrets": [],
+    "database": [],
+    "shell": [],
+    "mcp": ["list_models", "show_model", "preflight_model", "pull_model"],
+    "acp": [],
+    "cloud": [],
+    "deployment": [],
+    "browser": [],
+    "git": []
+  },
+  "contributes": {
+    "tools": [
+      "ollama.list_models",
+      "ollama.show_model",
+      "ollama.preflight_model",
+      "ollama.pull_model"
+    ]
+  }
+}

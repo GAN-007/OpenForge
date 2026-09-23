@@ -1,11 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use openforge_protocol::{DataClassification, ModelSpec};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
+
+const MODEL_PROVIDER_SCHEMA: &str =
+    include_str!("../../../schemas/model-provider.schema.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenForgeConfig {
@@ -68,7 +72,41 @@ impl OpenForgeConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let raw = fs::read_to_string(path.as_ref())
             .with_context(|| format!("read config {}", path.as_ref().display()))?;
-        serde_yaml::from_str(&raw).context("parse OpenForge config")
+        let config: Self = serde_yaml::from_str(&raw).context("parse OpenForge config")?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.max_parallel_agents == 0 {
+            bail!("max_parallel_agents must be at least 1");
+        }
+        if self.providers.is_empty() {
+            bail!("OpenForge config requires at least one model provider");
+        }
+
+        let schema: Value =
+            serde_json::from_str(MODEL_PROVIDER_SCHEMA).context("parse model provider schema")?;
+        let mut provider_names = BTreeSet::new();
+        for (index, provider) in self.providers.iter().enumerate() {
+            let value = serde_json::to_value(provider)
+                .with_context(|| format!("serialize provider {}", provider.name))?;
+            validate_schema_value(&value, &schema, &format!("providers[{index}]"))?;
+            if !provider_names.insert(provider.name.as_str()) {
+                bail!("duplicate model provider name {}", provider.name);
+            }
+            let mut model_ids = BTreeSet::new();
+            for model in &provider.models {
+                if !model_ids.insert(model.id.as_str()) {
+                    bail!(
+                        "duplicate model id {} in provider {}",
+                        model.id,
+                        provider.name
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -154,12 +192,15 @@ fn default_browser_args() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub name: String,
     pub kind: String,
     #[serde(default)]
     pub base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
@@ -167,6 +208,7 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     pub id: String,
     pub family: String,
@@ -216,5 +258,155 @@ impl ModelConfig {
             privacy_score: self.privacy_score,
             max_data_classification: self.max_data_classification,
         }
+    }
+}
+
+fn validate_schema_value(value: &Value, schema: &Value, path: &str) -> Result<()> {
+    if let Some(expected) = schema.get("type").and_then(Value::as_str) {
+        let matches = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            other => bail!("model-provider schema uses unsupported type {other}"),
+        };
+        if !matches {
+            bail!("{path} must be a {expected}");
+        }
+    }
+
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.iter().any(|candidate| candidate == value)
+    {
+        bail!("{path} contains a value outside the model-provider schema enum");
+    }
+
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+        && value.as_f64().is_some_and(|number| number < minimum)
+    {
+        bail!("{path} must be >= {minimum}");
+    }
+    if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64)
+        && value.as_f64().is_some_and(|number| number > maximum)
+    {
+        bail!("{path} must be <= {maximum}");
+    }
+    if let Some(min_length) = schema.get("minLength").and_then(Value::as_u64)
+        && value
+            .as_str()
+            .is_some_and(|text| text.chars().count() < min_length as usize)
+    {
+        bail!("{path} is shorter than the schema minimum length");
+    }
+    if let Some(min_items) = schema.get("minItems").and_then(Value::as_u64)
+        && value
+            .as_array()
+            .is_some_and(|items| items.len() < min_items as usize)
+    {
+        bail!("{path} contains fewer than {min_items} items");
+    }
+
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for field in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(field) {
+                    bail!("{path}.{field} is required by model-provider.schema.json");
+                }
+            }
+        }
+        let properties = schema.get("properties").and_then(Value::as_object);
+        for (key, child) in object {
+            if let Some(child_schema) = properties.and_then(|items| items.get(key)) {
+                validate_schema_value(child, child_schema, &format!("{path}.{key}"))?;
+                continue;
+            }
+            match schema.get("additionalProperties") {
+                Some(Value::Bool(false)) => {
+                    bail!("{path}.{key} is not allowed by model-provider.schema.json")
+                }
+                Some(extra @ Value::Object(_)) => {
+                    validate_schema_value(child, extra, &format!("{path}.{key}"))?;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(array) = value.as_array()
+        && let Some(item_schema) = schema.get("items")
+    {
+        for (index, item) in array.iter().enumerate() {
+            validate_schema_value(item, item_schema, &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_schema_accepts_local_ollama_shim_configuration() {
+        let config: OpenForgeConfig = serde_yaml::from_str(
+            r#"
+providers:
+  - name: local
+    kind: openai-compatible
+    base_url: http://127.0.0.1:11434/v1
+    models:
+      - id: qwen2.5-coder:7b
+        family: qwen
+        context_tokens: 32768
+        tools: true
+        structured_output: true
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        latency_score: 0.35
+        quality_score: 0.78
+        privacy_score: 1.0
+        max_data_classification: RESTRICTED
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn provider_schema_rejects_unknown_fields_invalid_scores_and_duplicates() {
+        let unknown = serde_yaml::from_str::<OpenForgeConfig>(
+            r#"
+providers:
+  - name: local
+    kind: openai-compatible
+    unsupported: true
+    models: []
+"#,
+        );
+        assert!(unknown.is_err());
+
+        let config: OpenForgeConfig = serde_yaml::from_str(
+            r#"
+providers:
+  - name: local
+    kind: openai-compatible
+    models:
+      - id: one
+        family: qwen
+        context_tokens: 1
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        quality_score: 1.2
+      - id: one
+        family: qwen
+        context_tokens: 1
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+"#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
     }
 }

@@ -2,6 +2,7 @@ mod anthropic;
 mod bedrock_cli;
 mod fabric;
 mod gemini;
+mod ollama;
 mod openai_compatible;
 mod router;
 

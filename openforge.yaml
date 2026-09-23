@@ -9,16 +9,52 @@ providers:
     kind: openai-compatible
     base_url: http://127.0.0.1:11434/v1
     models:
-      - id: qwen3-coder
+      - id: qwen2.5-coder:7b
         family: qwen
+        context_tokens: 32768
+        tools: true
+        vision: false
+        structured_output: true
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        latency_score: 0.35
+        quality_score: 0.78
+        privacy_score: 1.0
+        max_data_classification: RESTRICTED
+      - id: deepseek-coder:6.7b
+        family: deepseek
+        context_tokens: 16384
+        tools: false
+        vision: false
+        structured_output: true
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        latency_score: 0.30
+        quality_score: 0.72
+        privacy_score: 1.0
+        max_data_classification: RESTRICTED
+      - id: deepseek-coder-v2:16b
+        family: deepseek
         context_tokens: 32768
         tools: false
         vision: false
         structured_output: true
         input_usd_per_million: 0
         output_usd_per_million: 0
-        latency_score: 0.3
-        quality_score: 0.75
+        latency_score: 0.55
+        quality_score: 0.85
+        privacy_score: 1.0
+        max_data_classification: RESTRICTED
+      - id: deepseek-r1:7b
+        family: deepseek
+        context_tokens: 32768
+        tools: false
+        vision: false
+        structured_output: false
+        input_usd_per_million: 0
+        output_usd_per_million: 0
+        latency_score: 0.40
+        quality_score: 0.80
         privacy_score: 1.0
         max_data_classification: RESTRICTED
 
@@ -27,6 +63,10 @@ mcp_servers:
     program: python3
     args: [plugins/builtin/github/server.py]
     timeout_seconds: 70
+  - name: ollama
+    program: python3
+    args: [plugins/builtin/ollama/server.py]
+    timeout_seconds: 1800
 
 browser:
   program: node
