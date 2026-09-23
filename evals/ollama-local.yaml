@@ -1,0 +1,15 @@
+suite: ollama-local
+version: 1
+description: Regression contract for zero-cost local Ollama routing and preflight.
+cases:
+  - id: local-zero-cost
+    expected: zero-priced local models remain eligible when max_cost_usd is zero
+  - id: tool-capability-gate
+    requires_tools: true
+    expected: only models explicitly declaring tools=true are eligible
+  - id: missing-model-fallback
+    expected: a missing or memory-blocked preferred model falls through to the next eligible model
+  - id: native-options
+    expected: native Ollama requests preserve keep_alive, num_ctx and num_gpu
+  - id: memory-guard
+    expected: unloaded local models are rejected before invocation when MemAvailable is below calculated headroom

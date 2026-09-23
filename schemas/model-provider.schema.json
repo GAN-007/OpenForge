@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openforge.dev/schemas/model-provider.schema.json",
+  "title": "OpenForge model provider",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "kind",
+    "models"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": [
+        "openai-compatible",
+        "ollama",
+        "anthropic",
+        "gemini",
+        "bedrock-aws-cli"
+      ]
+    },
+    "base_url": {
+      "type": "string"
+    },
+    "api_key_env": {
+      "type": "string",
+      "minLength": 1
+    },
+    "region": {
+      "type": "string",
+      "minLength": 1
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "keep_alive": {
+      "type": "string",
+      "minLength": 1
+    },
+    "num_ctx": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "num_gpu": {
+      "type": "integer",
+      "minimum": -1
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "family",
+          "context_tokens",
+          "input_usd_per_million",
+          "output_usd_per_million"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "family": {
+            "type": "string",
+            "minLength": 1
+          },
+          "context_tokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "tools": {
+            "type": "boolean"
+          },
+          "vision": {
+            "type": "boolean"
+          },
+          "structured_output": {
+            "type": "boolean"
+          },
+          "input_usd_per_million": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_usd_per_million": {
+            "type": "number",
+            "minimum": 0
+          },
+          "latency_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "quality_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "privacy_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "max_data_classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

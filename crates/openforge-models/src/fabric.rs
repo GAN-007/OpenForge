@@ -1,4 +1,4 @@
-use crate::{ModelProvider, ModelRouter};
+use crate::{ModelPreflight, ModelProvider, ModelRouter};
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
@@ -80,6 +80,15 @@ impl FabricProvider {
                 )
             })?;
 
+        let preflight = provider.preflight(model).await?;
+        if !preflight.ready {
+            bail!(
+                "model preflight failed for {}/{}: {}",
+                model.provider,
+                model.model,
+                preflight.detail.as_deref().unwrap_or("model is not ready")
+            );
+        }
         provider.invoke(model, request).await
     }
 
@@ -123,6 +132,21 @@ impl ModelProvider for FabricProvider {
 
     fn catalog(&self) -> &[ModelSpec] {
         &self.catalog
+    }
+
+    async fn preflight(&self, model: &ModelSpec) -> Result<ModelPreflight> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.name() == model.provider)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no provider {} is registered for model {}",
+                    model.provider,
+                    model.model
+                )
+            })?;
+        provider.preflight(model).await
     }
 
     async fn invoke(&self, model: &ModelSpec, request: &ModelRequest) -> Result<ModelResponse> {

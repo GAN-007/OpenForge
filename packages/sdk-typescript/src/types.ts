@@ -298,3 +298,34 @@ export interface GatewayStatus {
   credential_persisted?: boolean;
   pricing: "gateway_reported_or_unpriced";
 }
+
+export interface ModelPreflight {
+  provider: string;
+  model: string;
+  ready: boolean;
+  endpoint_reachable?: boolean | null;
+  installed?: boolean | null;
+  loaded?: boolean | null;
+  available_memory_mb?: number | null;
+  required_memory_mb?: number | null;
+  detail?: string | null;
+}
+
+export interface OllamaRuntimeModelInfo {
+  name: string;
+  model?: string;
+  modified_at?: string;
+  size?: number;
+  digest?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface OllamaModelList {
+  models: OllamaRuntimeModelInfo[];
+}
+
+export interface OllamaPullResult {
+  model: string;
+  status: string;
+  completed: boolean;
+}

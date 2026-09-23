@@ -27,6 +27,32 @@ try {
   let run = null;
   let tasks = [];
   let gateway = { connected: false, base_url: 'https://model.sevi.io/cursor', model: 'auto-select', credential_storage: 'user_config_file', credential_persisted: false, pricing: 'gateway_reported_or_unpriced' };
+  const models = [{
+    provider: 'local',
+    model: 'qwen2.5-coder:7b',
+    family: 'qwen',
+    context_tokens: 32768,
+    supports_tools: true,
+    supports_vision: false,
+    supports_structured_output: true,
+    input_usd_per_million: 0,
+    output_usd_per_million: 0,
+    latency_score: 0.35,
+    quality_score: 0.78,
+    privacy_score: 1,
+    max_data_classification: 'RESTRICTED',
+  }];
+  const ollamaInventory = {
+    models: [{
+      name: 'qwen2.5-coder:7b',
+      model: 'qwen2.5-coder:7b',
+      size: 4_700_000_000,
+      digest: 'sha256:test',
+      modified_at: '2026-09-23T00:00:00Z',
+      details: {},
+    }],
+    available_memory_bytes: 12_000_000_000,
+  };
   const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS' };
   await page.route('http://127.0.0.1:8765/**', async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
@@ -46,6 +72,32 @@ try {
       case 'gateway/disconnect': gateway = { ...gateway, connected: false, credential_persisted: false }; result = gateway; break;
       case 'event/verify': result = { valid: true, verified_events: 1, violations: [] }; break;
       case 'telemetry/snapshot': result = { counters: {}, gauges: {}, histograms: {}, recent_events: [] }; break;
+      case 'model/list': result = models; break;
+      case 'mcp/call_tool':
+        assert.equal(request.params.server_name, 'ollama');
+        if (request.params.tool_name === 'list_models') {
+          result = { content: [], isError: false, structuredContent: ollamaInventory };
+        } else if (request.params.tool_name === 'preflight_model') {
+          assert.equal(request.params.arguments.model, 'qwen2.5-coder:7b');
+          assert.equal(request.params.arguments.context_tokens, 32768);
+          result = {
+            content: [],
+            isError: false,
+            structuredContent: {
+              ready: true,
+              installed: true,
+              model: 'qwen2.5-coder:7b',
+              context_tokens: 32768,
+              model_size_bytes: 4_700_000_000,
+              available_memory_bytes: 12_000_000_000,
+              estimated_required_memory_bytes: 5_500_000_000,
+              message: 'model is installed and fits available memory',
+            },
+          };
+        } else {
+          throw new Error(`Unexpected Ollama tool: ${request.params.tool_name}`);
+        }
+        break;
       case 'run/list': result = run ? [run] : []; break;
       case 'run/create':
         assert.equal(request.params.autonomy, 'suggest');
@@ -63,6 +115,8 @@ try {
     await route.fulfill({ json: { jsonrpc: '2.0', id: request.id, result }, headers });
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.getByText('qwen2.5-coder:7b', { exact: true }).waitFor();
+  await page.getByText('fits', { exact: true }).waitFor();
   const keyInput = page.getByLabel('Sevi API key', { exact: true });
   assert.equal(await keyInput.getAttribute('type'), 'password');
   await keyInput.fill('fake-gateway-key');
@@ -84,7 +138,7 @@ try {
   await page.locator('article.task').filter({ hasText: 'Check repository' }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Plan selected run', exact: true }).isDisabled(), true);
   assert.deepEqual(errors, []);
-  console.log('Web smoke passed: remembered Sevi connect/disconnect, create run, select run, audit stream, plan tasks; no browser exceptions.');
+  console.log('Web smoke passed: local Ollama inventory/preflight, remembered Sevi connect/disconnect, create run, audit stream, and task planning; no browser exceptions.');
 } finally {
   await browser?.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

@@ -218,6 +218,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 "acp",
                 "sandboxes",
                 "model_routing",
+                "model_preflight",
                 "completion",
                 "repository_index",
                 "repository_search",
@@ -272,6 +273,22 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
                 .store
                 .get_run(run_id)?
                 .context("run not found")?;
+            let preflight = state.engine.model_preflight().await;
+            if !preflight.iter().any(|report| report.ready) {
+                let detail = preflight
+                    .iter()
+                    .map(|report| {
+                        format!(
+                            "{}/{}: {}",
+                            report.provider,
+                            report.model,
+                            report.detail.as_deref().unwrap_or("not ready")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                anyhow::bail!("no configured model passed preflight: {detail}");
+            }
             let tasks = state
                 .engine
                 .plan_run(PathBuf::from(repo).as_path(), &run)
@@ -915,6 +932,7 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             )?)
         }
         "model/list" => Ok(serde_json::to_value(state.engine.models())?),
+        "model/preflight" => Ok(serde_json::to_value(state.engine.model_preflight().await)?),
         "model/providers" => Ok(json!({"providers": state.engine.providers()})),
         _ => anyhow::bail!("unknown RPC method {}", request.method),
     }

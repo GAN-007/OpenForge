@@ -7,7 +7,7 @@ import {
   type RepositoryIndex,
   type SearchHit,
 } from "@openforge/sdk";
-import { EmptyState, GatewaySettings, Panel } from "@openforge/ui";
+import { EmptyState, GatewaySettings, LocalModelSettings, Panel } from "@openforge/ui";
 
 export function DesktopApp() {
   const [apiToken, setApiToken] = useState(
@@ -102,6 +102,9 @@ export function DesktopApp() {
       <section className="workspace">
         <Panel title="Model connection" className="wide">
           <GatewaySettings client={client} />
+        </Panel>
+        <Panel title="Local model runtime" className="wide">
+          <LocalModelSettings client={client} />
         </Panel>
         <Panel title="Repository">
           <input

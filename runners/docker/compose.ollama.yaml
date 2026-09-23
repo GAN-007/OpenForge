@@ -1,0 +1,12 @@
+services:
+  runner:
+    build:
+      context: ../..
+      dockerfile: runners/docker/Dockerfile
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434

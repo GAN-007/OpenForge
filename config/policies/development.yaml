@@ -84,7 +84,11 @@ mcp:
     - "github/list_issues"
     - "github/list_pull_requests"
     - "github/list_workflow_runs"
-
+    - "ollama/tools/list"
+    - "ollama/list_models"
+    - "ollama/show_model"
+    - "ollama/preflight_model"
+    - "ollama/pull_model"
 acp:
   default: ask
 

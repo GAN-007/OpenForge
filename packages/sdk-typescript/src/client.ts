@@ -7,6 +7,9 @@ import type {
   PluginCapabilityDeclaration,
   PluginManifest,
   ModelSpec,
+  ModelPreflight,
+  OllamaModelList,
+  OllamaPullResult,
   GatewayStatus,
   RepositoryIndex,
   Run,
@@ -17,6 +20,32 @@ import type {
   TaskNode,
   TelemetrySnapshot,
 } from "./types.js";
+
+function structuredMcpResult<T>(result: {
+  content: unknown[];
+  isError: boolean;
+  structuredContent?: unknown;
+}): T {
+  if (result.isError) {
+    throw new Error("Ollama MCP tool reported an error");
+  }
+  if (result.structuredContent && typeof result.structuredContent === "object") {
+    return result.structuredContent as T;
+  }
+  for (const item of result.content) {
+    if (
+      item &&
+      typeof item === "object" &&
+      "type" in item &&
+      "text" in item &&
+      (item as { type?: unknown }).type === "text" &&
+      typeof (item as { text?: unknown }).text === "string"
+    ) {
+      return JSON.parse((item as { text: string }).text) as T;
+    }
+  }
+  throw new Error("Ollama MCP tool returned no structured result");
+}
 
 interface RpcResponse<T> {
   jsonrpc: "2.0";
@@ -300,6 +329,36 @@ export class OpenForgeClient {
 
   providers() {
     return this.rpc<{ providers: string[] }>("model/providers");
+  }
+
+  preflightModels() {
+    return this.rpc<ModelPreflight[]>("model/preflight");
+  }
+
+  async ollamaListModels(
+    policyPath = "config/policies/development.yaml",
+  ): Promise<OllamaModelList> {
+    return structuredMcpResult<OllamaModelList>(
+      await this.mcpCallTool("ollama", "list_models", {}, policyPath),
+    );
+  }
+
+  async ollamaPullModel(
+    model: string,
+    policyPath = "config/policies/development.yaml",
+  ): Promise<OllamaPullResult> {
+    return structuredMcpResult<OllamaPullResult>(
+      await this.mcpCallTool("ollama", "pull_model", { model }, policyPath),
+    );
+  }
+
+  async ollamaShowModel(
+    model: string,
+    policyPath = "config/policies/development.yaml",
+  ): Promise<Record<string, unknown>> {
+    return structuredMcpResult<Record<string, unknown>>(
+      await this.mcpCallTool("ollama", "show_model", { model }, policyPath),
+    );
   }
 
   leaseSecret(params: {

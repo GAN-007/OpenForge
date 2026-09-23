@@ -7,8 +7,8 @@ use openforge_context::RepositoryIndex;
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
     AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider, FabricProvider,
-    GeminiConfig, GeminiProvider, ModelProvider, ModelRouter, OpenAiCompatibleConfig,
-    OpenAiCompatibleProvider,
+    GeminiConfig, GeminiProvider, ModelPreflight, ModelProvider, ModelRouter, OllamaConfig,
+    OllamaProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
 };
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
 use openforge_protocol::{
@@ -114,6 +114,19 @@ impl Engine {
                         },
                     )?));
                 }
+                "ollama" => {
+                    if provider.base_url.trim().is_empty() {
+                        bail!("provider {} requires base_url", provider.name);
+                    }
+                    providers.push(Arc::new(OllamaProvider::new(OllamaConfig {
+                        provider_name: provider.name.clone(),
+                        base_url: provider.base_url.clone(),
+                        models,
+                        keep_alive: provider.keep_alive.clone().unwrap_or_else(|| "10m".into()),
+                        num_ctx: provider.num_ctx,
+                        num_gpu: provider.num_gpu,
+                    })?));
+                }
                 "anthropic" => {
                     let env = provider
                         .api_key_env
@@ -218,6 +231,20 @@ impl Engine {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect()
+    }
+
+    pub async fn model_preflight(&self) -> Vec<ModelPreflight> {
+        let provider = self.model_provider();
+        let mut reports = Vec::with_capacity(provider.catalog().len());
+        for model in provider.catalog() {
+            reports.push(
+                provider
+                    .preflight(model)
+                    .await
+                    .unwrap_or_else(|error| ModelPreflight::unavailable(model, error.to_string())),
+            );
+        }
+        reports
     }
 
     pub async fn create_run(
@@ -730,7 +757,10 @@ impl Engine {
                 requires_vision: false,
                 requires_structured_output: false,
                 max_cost_usd,
-                max_latency_ms: Some(4_000),
+                // Local CPU-backed Ollama models are deliberately slower than hosted
+                // autocomplete endpoints. Keep a hard ceiling, but make it compatible with
+                // the checked-in 0.30-0.55 latency scores (18-33s in the router scale).
+                max_latency_ms: Some(35_000),
                 data_classification: Default::default(),
                 preferred_model_families: vec![],
                 excluded_model_families: vec![],

@@ -93,6 +93,52 @@ class OpenForgeClient:
     async def initialize(self) -> dict[str, Any]:
         return await self.rpc("initialize")
 
+    async def model_preflight(self) -> list[dict[str, Any]]:
+        return await self.rpc("model/preflight")
+
+    @staticmethod
+    def _structured_mcp_result(result: dict[str, Any]) -> dict[str, Any]:
+        if result.get("isError"):
+            raise OpenForgeError("Ollama MCP tool reported an error")
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        for item in result.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    value = json.loads(text)
+                    if isinstance(value, dict):
+                        return value
+        raise OpenForgeError("Ollama MCP tool returned no structured result")
+
+    async def ollama_list_models(
+        self,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> dict[str, Any]:
+        result = await self.mcp_call_tool("ollama", "list_models", {}, policy_path=policy_path)
+        return self._structured_mcp_result(result)
+
+    async def ollama_show_model(
+        self,
+        model: str,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> dict[str, Any]:
+        result = await self.mcp_call_tool(
+            "ollama", "show_model", {"model": model}, policy_path=policy_path
+        )
+        return self._structured_mcp_result(result)
+
+    async def ollama_pull_model(
+        self,
+        model: str,
+        policy_path: str = "config/policies/development.yaml",
+    ) -> dict[str, Any]:
+        result = await self.mcp_call_tool(
+            "ollama", "pull_model", {"model": model}, policy_path=policy_path
+        )
+        return self._structured_mcp_result(result)
+
     async def create_run(
         self,
         repo: str,
