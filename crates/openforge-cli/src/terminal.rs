@@ -241,6 +241,15 @@ impl Editor {
                     position = input.len();
                     menu = false;
                 }
+                KeyCode::Enter
+                    if key
+                        .modifiers
+                        .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+                {
+                    input.insert(position, '\n');
+                    position += 1;
+                    menu = false;
+                }
                 KeyCode::Enter => {
                     if !choices.is_empty() {
                         input = choices[selected].into();
@@ -250,7 +259,7 @@ impl Editor {
                         cursor::MoveToColumn(0),
                         terminal::Clear(ClearType::FromCursorDown)
                     )?;
-                    print!("openforge> {input}\r\n");
+                    print!("openforge> {}\r\n", input.replace('\n', "\r\n"));
                     io::stdout().flush()?;
                     if !input.is_empty() {
                         self.history.push(input.clone());
