@@ -1,4 +1,4 @@
-use crate::{ModelProvider, ollama::OllamaNativeAdapter};
+use crate::ModelProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use openforge_protocol::{ModelRequest, ModelResponse, ModelSpec};
@@ -31,19 +31,13 @@ impl std::fmt::Debug for OpenAiCompatibleConfig {
 pub struct OpenAiCompatibleProvider {
     cfg: OpenAiCompatibleConfig,
     client: Client,
-    ollama_native: Option<OllamaNativeAdapter>,
 }
 impl OpenAiCompatibleProvider {
     pub fn new(cfg: OpenAiCompatibleConfig) -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(180))
             .build()?;
-        let ollama_native = OllamaNativeAdapter::detect(&cfg.base_url, client.clone());
-        Ok(Self {
-            cfg,
-            client,
-            ollama_native,
-        })
+        Ok(Self { cfg, client })
     }
 }
 
@@ -78,17 +72,6 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 
     async fn invoke(&self, model: &ModelSpec, request: &ModelRequest) -> Result<ModelResponse> {
-        // Ollama exposes an OpenAI-compatible surface, but its native endpoint carries
-        // local-runtime controls the shim cannot express (keep_alive, num_ctx, num_gpu)
-        // and lets us reject impossible loads before paying the model startup cost.
-        // When a local :11434/v1 endpoint is detected, prefer that richer path. If the
-        // native endpoint itself is unavailable, fall through to the generic shim.
-        if let Some(ollama) = &self.ollama_native
-            && let Some(response) = ollama.invoke(self.name(), model, request).await?
-        {
-            return Ok(response);
-        }
-
         let url = format!(
             "{}/chat/completions",
             self.cfg.base_url.trim_end_matches('/')

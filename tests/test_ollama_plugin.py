@@ -17,7 +17,7 @@ class OllamaPluginTests(unittest.TestCase):
     def test_tools_are_complete_and_model_validation_is_strict(self):
         self.assertEqual(
             [tool["name"] for tool in MODULE.tool_list()],
-            ["list_models", "show_model", "pull_model"],
+            ["list_models", "show_model", "preflight_model", "pull_model"],
         )
         self.assertEqual(MODULE.model_name({"model": "qwen2.5-coder:7b"}), "qwen2.5-coder:7b")
         for value in ("", "../model", "bad model", "x" * 129):

@@ -1,9 +1,9 @@
 from .client import OpenForgeClient, OpenForgeError
-from .provider_config import ModelProviderConfig, ProviderModelConfig
+from .model_provider import ModelProviderConfig, ModelProviderModelConfig
 
 __all__ = [
     "ModelProviderConfig",
+    "ModelProviderModelConfig",
     "OpenForgeClient",
     "OpenForgeError",
-    "ProviderModelConfig",
 ]

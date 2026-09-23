@@ -311,7 +311,7 @@ export interface ModelPreflight {
   detail?: string | null;
 }
 
-export interface OllamaModelInfo {
+export interface OllamaRuntimeModelInfo {
   name: string;
   model?: string;
   modified_at?: string;
@@ -321,7 +321,7 @@ export interface OllamaModelInfo {
 }
 
 export interface OllamaModelList {
-  models: OllamaModelInfo[];
+  models: OllamaRuntimeModelInfo[];
 }
 
 export interface OllamaPullResult {

@@ -3,6 +3,7 @@ package dev.openforge
 
 enum class ModelProviderKind {
     OPENAI_COMPATIBLE,
+    OLLAMA,
     ANTHROPIC,
     GEMINI,
     BEDROCK_AWS_CLI,
@@ -38,4 +39,7 @@ data class ModelProviderConfig(
     val apiKeyEnv: String? = null,
     val region: String? = null,
     val headers: Map<String, String> = emptyMap(),
+    val keepAlive: String? = null,
+    val numCtx: Int? = null,
+    val numGpu: Int? = null,
 )

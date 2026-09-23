@@ -73,7 +73,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install "PyYAML>=6,<7"
       - run: python tests/protocol/validate_json.py
-      - run: python scripts/generate_provider_types.py --check
+      - run: python tests/protocol/validate_evals.py
       - run: python scripts/generate_model_provider_types.py --check
       - run: python tests/protocol/validate_workflows.py
       - run: bash -n setup.sh

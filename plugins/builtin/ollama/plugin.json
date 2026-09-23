@@ -17,6 +17,7 @@
     "mcp": [
       "list_models",
       "show_model",
+      "preflight_model",
       "pull_model"
     ],
     "acp": [],
@@ -29,6 +30,7 @@
     "tools": [
       "ollama.list_models",
       "ollama.show_model",
+      "ollama.preflight_model",
       "ollama.pull_model"
     ]
   }

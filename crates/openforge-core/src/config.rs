@@ -203,8 +203,11 @@ pub struct ProviderConfig {
     pub region: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub num_ctx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub num_gpu: Option<i32>,
     pub models: Vec<ModelConfig>,
 }
@@ -356,8 +359,8 @@ mod tests {
             r#"
 providers:
   - name: local
-    kind: openai-compatible
-    base_url: http://127.0.0.1:11434/v1
+    kind: ollama
+    base_url: http://127.0.0.1:11434
     models:
       - id: qwen2.5-coder:7b
         family: qwen

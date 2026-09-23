@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-ModelProviderKind = Literal["openai-compatible", "anthropic", "gemini", "bedrock-aws-cli"]
+ModelProviderKind = Literal["openai-compatible", "ollama", "anthropic", "gemini", "bedrock-aws-cli"]
 DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
 
 
@@ -36,3 +36,6 @@ class ModelProviderConfig(_ModelProviderRequired, total=False):
     api_key_env: str
     region: str
     headers: dict[str, str]
+    keep_alive: str
+    num_ctx: int
+    num_gpu: int

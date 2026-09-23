@@ -24,8 +24,7 @@
       ]
     },
     "base_url": {
-      "type": "string",
-      "pattern": "^https?://"
+      "type": "string"
     },
     "api_key_env": {
       "type": "string",
@@ -57,110 +56,70 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "#/$defs/model"
-      }
-    }
-  },
-  "$defs": {
-    "model": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "family",
-        "context_tokens",
-        "input_usd_per_million",
-        "output_usd_per_million"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "family": {
-          "type": "string",
-          "minLength": 1
-        },
-        "context_tokens": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "tools": {
-          "type": "boolean"
-        },
-        "vision": {
-          "type": "boolean"
-        },
-        "structured_output": {
-          "type": "boolean"
-        },
-        "input_usd_per_million": {
-          "type": "number",
-          "minimum": 0
-        },
-        "output_usd_per_million": {
-          "type": "number",
-          "minimum": 0
-        },
-        "latency_score": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "quality_score": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "privacy_score": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "max_data_classification": {
-          "enum": [
-            "PUBLIC",
-            "INTERNAL",
-            "CONFIDENTIAL",
-            "RESTRICTED"
-          ]
-        }
-      }
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "ollama"
-          }
-        }
-      },
-      "then": {
+        "type": "object",
+        "additionalProperties": false,
         "required": [
-          "base_url"
+          "id",
+          "family",
+          "context_tokens",
+          "input_usd_per_million",
+          "output_usd_per_million"
         ],
-        "not": {
-          "required": [
-            "api_key_env"
-          ]
-        }
-      }
-    },
-    {
-      "if": {
         "properties": {
-          "kind": {
-            "const": "openai-compatible"
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "family": {
+            "type": "string",
+            "minLength": 1
+          },
+          "context_tokens": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "tools": {
+            "type": "boolean"
+          },
+          "vision": {
+            "type": "boolean"
+          },
+          "structured_output": {
+            "type": "boolean"
+          },
+          "input_usd_per_million": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_usd_per_million": {
+            "type": "number",
+            "minimum": 0
+          },
+          "latency_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "quality_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "privacy_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "max_data_classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ]
           }
         }
-      },
-      "then": {
-        "required": [
-          "base_url"
-        ]
       }
     }
-  ]
+  }
 }
