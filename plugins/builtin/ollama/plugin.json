@@ -9,13 +9,16 @@
     "filesystem": [],
     "network": [
       "http://127.0.0.1:11434/**",
-      "http://localhost:11434/**",
-      "http://host.docker.internal:11434/**"
+      "http://localhost:11434/**"
     ],
     "secrets": [],
     "database": [],
     "shell": [],
-    "mcp": ["list_models", "show_model", "preflight_model", "pull_model"],
+    "mcp": [
+      "list_models",
+      "show_model",
+      "pull_model"
+    ],
     "acp": [],
     "cloud": [],
     "deployment": [],
@@ -26,7 +29,6 @@
     "tools": [
       "ollama.list_models",
       "ollama.show_model",
-      "ollama.preflight_model",
       "ollama.pull_model"
     ]
   }

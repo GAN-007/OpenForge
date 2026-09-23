@@ -6,8 +6,11 @@ max_parallel_agents: 4
 
 providers:
   - name: local
-    kind: openai-compatible
-    base_url: http://127.0.0.1:11434/v1
+    kind: ollama
+    base_url: http://127.0.0.1:11434
+    keep_alive: 10m
+    num_ctx: 32768
+    num_gpu: 0
     models:
       - id: qwen2.5-coder:7b
         family: qwen
@@ -66,7 +69,7 @@ mcp_servers:
   - name: ollama
     program: python3
     args: [plugins/builtin/ollama/server.py]
-    timeout_seconds: 1800
+    timeout_seconds: 900
 
 browser:
   program: node

@@ -1,16 +1,13 @@
-# Docker runner → host Ollama bridge
+# Ollama access from Docker runners
 
-OpenForge's control plane normally calls the configured model provider from the host daemon, so ordinary agent execution does not require Ollama inside the sandbox. The bridge in `compose.ollama.yaml` is for runner tasks, diagnostics, or tools that intentionally need to reach the host Ollama API.
+The OpenForge model fabric runs in the daemon process, so normal model calls do not need to cross the sandbox boundary. This bridge is for acceptance tests, tools, or repository code executed inside the Docker runner that also need to call the host Ollama API.
 
-Start Ollama on the host and make it reachable from the Docker bridge. On Linux, Ollama commonly binds only to `127.0.0.1`; `host.docker.internal` cannot reach that loopback-only listener. Bind Ollama to a host interface deliberately and protect port `11434` with the host firewall. Do not expose the unauthenticated Ollama API to an untrusted network.
+Start Ollama so it accepts the Docker bridge connection, then launch the runner with:
 
 ```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve
-
-docker compose -f runners/docker/compose.ollama.yaml run --rm runner \
-  curl -fsS http://host.docker.internal:11434/api/tags
+docker compose -f runners/docker/docker-compose.ollama.yml run --rm openforge-runner
 ```
 
-The compose file adds the Linux `host-gateway` mapping and sets `OLLAMA_HOST=http://host.docker.internal:11434` inside the runner. macOS and Windows Docker Desktop already provide `host.docker.internal`.
+Inside the container, use `$OLLAMA_URL` (configured as `http://host.docker.internal:11434`). The compose file adds Docker's Linux `host-gateway` mapping and does not mount Docker's control socket or expose unrelated host services.
 
-If host networking is preferable on Linux, run the runner with `--network host` and keep Ollama bound to loopback. Do not combine host networking with untrusted autonomous workloads unless the policy and containment boundary explicitly allow access to host-local services.
+If Ollama is intentionally bound only to `127.0.0.1`, container access will fail. Keep it loopback-only when containers do not need direct Ollama access; otherwise bind Ollama to an interface reachable from Docker and use host firewall rules to restrict access to the local bridge.

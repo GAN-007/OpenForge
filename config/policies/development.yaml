@@ -87,6 +87,10 @@ mcp:
     - "ollama/tools/list"
     - "ollama/list_models"
     - "ollama/show_model"
+    - "ollama/pull_model"
+    - "ollama/tools/list"
+    - "ollama/list_models"
+    - "ollama/show_model"
     - "ollama/preflight_model"
     - "ollama/pull_model"
 

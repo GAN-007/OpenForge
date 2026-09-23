@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import re
+
+import yaml
 from pathlib import Path
 
 import yaml

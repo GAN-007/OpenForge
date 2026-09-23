@@ -2,21 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openforge.dev/schemas/model-provider.schema.json",
   "title": "OpenForge model provider",
-  "description": "Canonical configuration contract for one OpenForge model provider and its models.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "kind", "models"],
+  "required": [
+    "name",
+    "kind",
+    "models"
+  ],
   "properties": {
     "name": {
       "type": "string",
       "minLength": 1
     },
     "kind": {
-      "type": "string",
-      "enum": ["openai-compatible", "anthropic", "gemini", "bedrock-aws-cli"]
+      "enum": [
+        "openai-compatible",
+        "ollama",
+        "anthropic",
+        "gemini",
+        "bedrock-aws-cli"
+      ]
     },
     "base_url": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^https?://"
     },
     "api_key_env": {
       "type": "string",
@@ -32,70 +41,126 @@
         "type": "string"
       }
     },
+    "keep_alive": {
+      "type": "string",
+      "minLength": 1
+    },
+    "num_ctx": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "num_gpu": {
+      "type": "integer",
+      "minimum": -1
+    },
     "models": {
       "type": "array",
       "minItems": 1,
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "family",
-          "context_tokens",
-          "input_usd_per_million",
-          "output_usd_per_million"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "family": {
-            "type": "string",
-            "minLength": 1
-          },
-          "context_tokens": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "tools": {
-            "type": "boolean"
-          },
-          "vision": {
-            "type": "boolean"
-          },
-          "structured_output": {
-            "type": "boolean"
-          },
-          "input_usd_per_million": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_usd_per_million": {
-            "type": "number",
-            "minimum": 0
-          },
-          "latency_score": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "quality_score": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "privacy_score": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "max_data_classification": {
-            "type": "string",
-            "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
-          }
+        "$ref": "#/$defs/model"
+      }
+    }
+  },
+  "$defs": {
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "family",
+        "context_tokens",
+        "input_usd_per_million",
+        "output_usd_per_million"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tools": {
+          "type": "boolean"
+        },
+        "vision": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "input_usd_per_million": {
+          "type": "number",
+          "minimum": 0
+        },
+        "output_usd_per_million": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latency_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "quality_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "privacy_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_data_classification": {
+          "enum": [
+            "PUBLIC",
+            "INTERNAL",
+            "CONFIDENTIAL",
+            "RESTRICTED"
+          ]
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "ollama"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "base_url"
+        ],
+        "not": {
+          "required": [
+            "api_key_env"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "openai-compatible"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "base_url"
+        ]
+      }
+    }
+  ]
 }
