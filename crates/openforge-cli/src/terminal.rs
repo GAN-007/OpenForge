@@ -9,45 +9,61 @@ use std::io::{self, IsTerminal, Write};
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "show all commands"),
-    (
-        "/init",
-        "create project instructions without overwriting them",
-    ),
-    (
-        "/review",
-        "review tracked changes using a read-only model run",
-    ),
-    ("/status", "session, workspace and last run"),
+    ("/init", "create AGENTS.md without overwriting it"),
+    ("/review", "review tracked changes with a read-only run"),
+    ("/status", "session, workspace, policy, goal and last run"),
     ("/model", "inspect available models and active gateway"),
-    (
-        "/permissions",
-        "show policy; add a path to select another policy",
-    ),
-    ("/plan", "switch to planning without execution"),
+    ("/permissions", "show or select the active policy"),
+    ("/approvals", "alias for /permissions"),
+    ("/plan", "enter planning mode; optional inline objective"),
     ("/mode", "set suggest, edit or execute"),
     ("/budget", "show or set the next turn's USD budget"),
-    ("/diff", "show uncommitted workspace changes"),
+    (
+        "/goal",
+        "set, view, pause, resume or clear a persistent goal",
+    ),
+    ("/personality", "set friendly, pragmatic or none"),
+    ("/diff", "show tracked workspace and last-run changes"),
     ("/files", "list workspace files locally"),
+    ("/mention", "attach a workspace file to future objectives"),
     ("/new", "start a new saved conversation"),
     ("/resume", "list sessions or resume a session UUID"),
     ("/fork", "copy this conversation into a new session"),
+    ("/rename", "rename the current saved session"),
+    ("/archive", "archive this session and start a new one"),
+    ("/delete", "delete this session and start a new one"),
     ("/compact", "retain the last six messages in context"),
+    ("/copy", "copy the latest OpenForge output via OSC 52"),
     ("/context", "show conversation context"),
-    ("/mcp", "list servers; add a server name to discover tools"),
-    ("/apps", "list installed plugins"),
+    ("/memories", "inspect repository memory"),
+    ("/skills", "list workspace SKILL.md files"),
+    ("/mcp", "list servers; use verbose or a server name"),
+    ("/apps", "list installed plugin manifests"),
+    ("/plugins", "alias for /apps"),
+    ("/agent", "inspect task agents and ACP processes"),
+    ("/subagents", "alias for /agent"),
+    ("/ps", "show live ACP agent processes"),
+    ("/stop", "stop an ACP process UUID or all"),
     ("/runs", "list recent runs"),
     ("/tasks", "show tasks for the last run"),
     ("/events", "show events for the last run"),
+    ("/usage", "show the last run's budget usage"),
+    (
+        "/debug-config",
+        "show daemon, gateway, model and policy diagnostics",
+    ),
     ("/connect", "enter and save Sevi credentials"),
     (
         "/disconnect",
         "disconnect and forget saved Sevi credentials",
     ),
+    ("/logout", "disconnect the shared Sevi provider"),
     ("/gateway", "show gateway connection"),
     ("/provider", "show model catalog"),
     ("/clear", "clear conversation context"),
     ("/whoami", "show local user"),
     ("/pwd", "show workspace path"),
+    ("/exit", "leave OpenForge"),
     ("/quit", "leave OpenForge"),
 ];
 
@@ -107,23 +123,13 @@ impl Editor {
                 cursor::MoveToColumn(0),
                 terminal::Clear(ClearType::FromCursorDown)
             )?;
-            let before: String = input[..position]
-                .chars()
-                .rev()
-                .take(width.saturating_sub(12))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let after: String = input[position..]
-                .chars()
-                .take(width.saturating_sub(12 + before.chars().count()))
-                .collect();
-            print!(
-                "openforge> {}{}",
-                display_input(&before),
-                display_input(&after)
+            let before = render_fragment(&input[..position], width.saturating_sub(12), true);
+            let after = render_fragment(
+                &input[position..],
+                width.saturating_sub(12 + before.chars().count()),
+                false,
             );
+            print!("openforge> {before}{after}");
             let mut rows = 0;
             let start = selected.saturating_sub(5);
             for (i, name) in choices.iter().enumerate().skip(start).take(6) {
@@ -145,7 +151,7 @@ impl Editor {
             io::stdout().flush()?;
             let ev = event::read()?;
             if let Event::Paste(text) = ev {
-                let pasted = pasted_text(&text);
+                let pasted = normalize_paste(&text);
                 input.insert_str(position, &pasted);
                 position += pasted.len();
                 menu = false;
@@ -266,37 +272,46 @@ impl Editor {
     }
 }
 
-fn pasted_text(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
         .collect()
 }
-fn display_input(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\n' => '↵',
-            '\t' => '→',
-            c => c,
-        })
-        .collect()
+
+fn render_fragment(value: &str, maximum: usize, from_end: bool) -> String {
+    let rendered = value.replace('\n', "↵").replace('\t', "    ");
+    if from_end {
+        rendered
+            .chars()
+            .rev()
+            .take(maximum)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        rendered.chars().take(maximum).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn pasted_code_preserves_lines_and_indentation_without_terminal_controls() {
-        assert_eq!(
-            pasted_text("fn main() {\r\n\tcall();\n}\u{1b}"),
-            "fn main() {\n\tcall();\n}"
-        );
-        assert_eq!(display_input("a\n\tb"), "a↵→b");
-    }
-    #[test]
     fn palette_filters_only_commands() {
         assert_eq!(candidates("/res"), vec!["/resume"]);
         assert!(candidates("/resume uuid").is_empty());
         assert!(candidates("ordinary objective").is_empty());
         assert_eq!(candidates("/").len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn pasted_code_preserves_lines_tabs_and_indentation() {
+        assert_eq!(
+            normalize_paste("fn main() {\r\n\tprintln!(\"hi\");\r\n}\u{0007}"),
+            "fn main() {\n\tprintln!(\"hi\");\n}"
+        );
     }
 }

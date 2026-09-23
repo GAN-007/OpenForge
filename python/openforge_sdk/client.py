@@ -62,17 +62,17 @@ class OpenForgeClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise OpenForgeError(
-                f"invalid daemon response: HTTP {response.status_code}"
-            ) from exc
+            raise OpenForgeError(f"invalid daemon response: HTTP {response.status_code}") from exc
 
-        if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0" or payload.get("id") != request_id:
+        if (
+            not isinstance(payload, dict)
+            or payload.get("jsonrpc") != "2.0"
+            or payload.get("id") != request_id
+        ):
             raise OpenForgeError("invalid or mismatched daemon response")
         if response.is_error or payload.get("error"):
             error = payload.get("error") or {}
-            raise OpenForgeError(
-                str(error.get("message") or f"HTTP {response.status_code}")
-            )
+            raise OpenForgeError(str(error.get("message") or f"HTTP {response.status_code}"))
         if "result" not in payload:
             raise OpenForgeError("daemon response has no result")
         return payload["result"]
@@ -137,12 +137,15 @@ class OpenForgeClient:
     async def list_runs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         return await self.rpc("run/list", {"limit": limit, "offset": offset})
 
-    async def stream_events(self, run_id: str, after_sequence: int = 0) -> AsyncIterator[dict[str, Any]]:
+    async def stream_events(
+        self, run_id: str, after_sequence: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:
         """Replay and follow audit events; resume with the last yielded sequence."""
         from urllib.parse import quote
 
         async with self._client.stream(
-            "GET", f"/v1/runs/{quote(run_id, safe='')}/events/stream",
+            "GET",
+            f"/v1/runs/{quote(run_id, safe='')}/events/stream",
             params={"after_sequence": after_sequence},
             headers={"accept": "text/event-stream"},
             timeout=httpx.Timeout(30.0, read=None),

@@ -43,12 +43,15 @@ async def test_authenticated_event_replay_and_heartbeats():
     def respond(request):
         assert request.headers["authorization"] == "Bearer secret"
         assert request.url.params["after_sequence"] == "4"
-        return httpx.Response(200, text=': ping\r\n\r\nevent: audit\r\ndata: {"sequence":5}\r\n\r\n')
+        return httpx.Response(
+            200, text=': ping\r\n\r\nevent: audit\r\ndata: {"sequence":5}\r\n\r\n'
+        )
 
     async with OpenForgeClient(api_token="secret") as client:
         await client._client.aclose()
         client._client = httpx.AsyncClient(
-            base_url="http://test", headers={"authorization": "Bearer secret"},
+            base_url="http://test",
+            headers={"authorization": "Bearer secret"},
             transport=httpx.MockTransport(respond),
         )
         assert [event async for event in client.stream_events("run", 4)] == [{"sequence": 5}]
@@ -60,7 +63,9 @@ async def test_stream_reports_server_error():
         await client._client.aclose()
         client._client = httpx.AsyncClient(
             base_url="http://test",
-            transport=httpx.MockTransport(lambda _: httpx.Response(200, text="event: error\ndata: failed\n\n")),
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, text="event: error\ndata: failed\n\n")
+            ),
         )
         with pytest.raises(OpenForgeError, match="failed"):
             async for _ in client.stream_events("run"):
