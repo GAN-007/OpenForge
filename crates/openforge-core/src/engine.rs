@@ -730,7 +730,7 @@ impl Engine {
                 requires_vision: false,
                 requires_structured_output: false,
                 max_cost_usd,
-                max_latency_ms: Some(4_000),
+                // Local CPU-backed Ollama models are deliberately slower than hosted\n                // autocomplete endpoints. Keep a hard ceiling, but make it compatible with\n                // the checked-in 0.30-0.55 latency scores (18-33s in the router scale).\n                max_latency_ms: Some(35_000),
                 data_classification: Default::default(),
                 preferred_model_families: vec![],
                 excluded_model_families: vec![],
