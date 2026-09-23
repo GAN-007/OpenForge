@@ -20,7 +20,7 @@ import {
   type TaskNode,
   type TelemetrySnapshot,
 } from "@openforge/sdk";
-import { EmptyState, GatewaySettings, Panel, StatusPill } from "@openforge/ui";
+import { EmptyState, GatewaySettings, LocalModelSettings, Panel, StatusPill } from "@openforge/ui";
 
 function formatBytes(value: number | null | undefined): string {
   if (value == null) return "unavailable";

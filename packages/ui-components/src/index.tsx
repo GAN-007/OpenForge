@@ -12,3 +12,4 @@ export function StatusPill({status}:{status:string}){
 export function EmptyState({children}:PropsWithChildren){return <div className="of-empty">{children}</div>;}
 
 export { GatewaySettings } from "./GatewaySettings.js";
+export { LocalModelSettings } from "./LocalModelSettings.js";

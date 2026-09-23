@@ -1,57 +1,41 @@
-# Ollama local models
+# Ollama provider
 
-OpenForge keeps Ollama on the existing `openai-compatible` provider contract so vLLM, LM Studio, hosted gateways, and other compatible endpoints continue to use the same generic adapter. For a local `http://127.0.0.1:11434/v1`, `localhost:11434/v1`, or `host.docker.internal:11434/v1` endpoint, the adapter automatically activates the native Ollama `/api/chat` path before falling back to `/v1/chat/completions`.
+OpenForge has two Ollama-compatible paths:
 
-The native path adds the controls the compatibility shim cannot carry: model residency through `keep_alive`, request context through `num_ctx`, optional GPU allocation through `num_gpu`, and a preflight that checks `/api/tags` plus available Linux memory before loading a model. If the chosen model is absent or does not fit, the normal model fabric can continue to another eligible configured model.
+1. **Native Ollama provider** (`kind: ollama`) for local runtime controls such as `keep_alive`, `num_ctx`, `num_gpu`, installed-model checks and RAM preflight.
+2. **Generic OpenAI-compatible provider** (`kind: openai-compatible`) for Ollama's `/v1` compatibility endpoint and other compatible gateways.
 
-## Checked-in local catalog
+The checked-in `openforge.yaml` uses the native path and registers:
 
-`openforge.yaml` registers:
+- `qwen2.5-coder:7b`
+- `deepseek-coder:6.7b`
+- `deepseek-coder-v2:16b`
+- `deepseek-r1:7b`
 
-- `qwen2.5-coder:7b` — tools and structured output enabled;
-- `deepseek-coder:6.7b` — structured output, no tool routing;
-- `deepseek-coder-v2:16b` — structured output, no tool routing;
-- `deepseek-r1:7b` — reasoning model, no tools and no structured-output routing.
+Only models explicitly marked with `tools: true` can satisfy a tool-required routing request. Local models are priced at zero in the default configuration, so routing primarily differentiates them by capability, quality, privacy and latency.
 
-Pull only the models you intend to run:
+## Preflight
 
-```bash
-ollama pull qwen2.5-coder:7b
-ollama pull deepseek-coder:6.7b
-ollama pull deepseek-r1:7b
-# Pull deepseek-coder-v2:16b only when the host has enough free memory.
-```
+Before planning, the daemon asks every configured provider for a readiness report. For local Ollama this checks the loopback endpoint, verifies that the configured model exists, detects whether it is already loaded, reads Linux `MemAvailable` when the endpoint is local, and estimates load headroom from the installed model size. Missing or blocked candidates are skipped by the fabric fallback chain.
 
-The daemon does not require every configured model to be installed at startup. Availability is checked immediately before a native Ollama invocation, so a missing or oversized preferred model can fail cleanly and allow fabric fallback.
-
-## Native runtime controls
-
-Defaults are conservative and can be overridden for the daemon process:
+Inspect readiness from any client:
 
 ```bash
-export OPENFORGE_OLLAMA_KEEP_ALIVE=30m
-export OPENFORGE_OLLAMA_NUM_CTX=32768
-export OPENFORGE_OLLAMA_NUM_GPU=0
-export OPENFORGE_OLLAMA_MEMORY_HEADROOM_MB=512
+curl -s http://127.0.0.1:8765/v1/rpc \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"model/preflight","params":{}}' | jq .
 ```
 
-`OPENFORGE_OLLAMA_NATIVE=off` disables native detection and forces the generic OpenAI-compatible shim. `OPENFORGE_OLLAMA_NATIVE=on` forces native mode for a `/v1` endpoint when an advanced local deployment does not use the default host name. Credentials are never added by native detection.
-
-## Model management
-
-The built-in `dev.openforge.ollama` MCP plugin exposes four policy-gated tools: `list_models`, `show_model`, `preflight_model`, and `pull_model`. The default development policy allows those tools only through the named `ollama` MCP server configured in `openforge.yaml`.
-
-The web console uses the same MCP boundary to show installed models, current available memory, per-model fit checks, and explicit pull actions. This keeps model downloads out of the daemon's canonical run API and inside the existing capability-policy boundary.
+The web and desktop interfaces show the same status and can explicitly pull missing models through the policy-gated local Ollama MCP plugin.
 
 ## Verification
 
-Run the repository verification script from the checkout:
+Run the full local verification from the repository root:
 
 ```bash
-chmod +x verify-ollama-openforge.sh
 ./verify-ollama-openforge.sh
 ```
 
-It checks local prerequisites, cross-checks configured model IDs against `ollama list`, builds the workspace, starts an isolated daemon state, verifies `model/list`, exercises the Ollama MCP inventory, and invokes one selected local model through `FabricProvider` using the native adapter.
+It verifies prerequisites, configured-vs-installed models, Rust formatting/check/tests, daemon startup, model catalog/preflight, a real OpenForge completion request, and direct native Ollama chat calls for installed configured models.
 
-For Docker access, see `runners/docker/ollama-bridge.md`.
+Large models can remain configured even when the current machine cannot load them. The preflight/fallback path prevents an oversized preferred model from turning a run into a long opaque failure; install or remove models according to the target machine's RAM.

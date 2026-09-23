@@ -26,7 +26,7 @@ Automatic system package installation supports Debian/Ubuntu with `apt-get`; it 
 
 All launcher interfaces use the same daemon. The launcher checks for an existing OpenForge protocol endpoint on ports 8875 and 8765, preferring its saved endpoint, before starting one. An unrelated service is never stopped. Web frontends use an available loopback port from 5180 and a same-origin Vite proxy, so occupied ports do not require changing your daemon's CORS configuration.
 
-Enter your Sevi key in **Model connection → Sevi model gateway → Test & connect**, or enter `/connect` in the terminal. CLI planning, execution and completion then use the same gateway as the GUI. The alias `auto-select` can select different underlying models per request. Successfully tested keys are saved by the daemon in its private per-user configuration file and restored on restart; they never enter launcher state. Use **Disconnect & forget key** to remove the saved credential. See [credential storage details](providers/sevi.md). Sevi controls access, quotas and charges.
+For local-first use, **Local model runtime** shows configured Ollama models, installed state, RAM headroom and explicit pull controls. The checked-in daemon config uses the native Ollama provider and preflights candidates before planning. For the hosted Sevi path, enter your Sevi key in **Model connection → Sevi model gateway → Test & connect**, or enter `/connect` in the terminal. CLI planning, execution and completion then use the same gateway as the GUI. The alias `auto-select` can select different underlying models per request. Successfully tested keys are saved by the daemon in its private per-user configuration file and restored on restart; they never enter launcher state. Use **Disconnect & forget key** to remove the saved credential. See [credential storage details](providers/sevi.md). Sevi controls access, quotas and charges.
 
 `OPENFORGE_API_TOKEN` is the separate daemon authentication token. The CLI reads it from the environment; authenticated browser/desktop clients require it in their daemon-token field, and the IDE uses **OpenForge: Set API Token**. The launcher does not copy either credential into workspace files.
 
@@ -79,3 +79,8 @@ Local terminal requests `list all files in this folder`, `ls`, `/files`, `whoami
 For model-driven objectives, planner cost estimates determine proportional shares of the remaining user-selected run budget after planning costs. A single task can use that remaining budget instead of being capped by an arbitrarily small model estimate. The run's dollar limit and reported provider charges still apply; Sevi is not guaranteed to be free.
 
 The [interactive terminal guide](terminal.md) covers the slash picker, keyboard controls, saved conversations, review, permissions and current backend limits.
+
+
+## Local Ollama verification
+
+Use `./verify-ollama-openforge.sh` from the repository root to validate the local model catalog, Rust workspace, daemon model preflight and one real completion routed through OpenForge. For container workloads that themselves need Ollama access, see `runners/docker/ollama-bridge.md`.

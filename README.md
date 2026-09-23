@@ -10,7 +10,8 @@ The repository contains a working Rust control plane and CLI, SQLite WAL event/s
 
 Model providers currently supported by the built-in fabric are:
 
-- OpenAI-compatible HTTP endpoints, including Ollama, vLLM, LM Studio, OpenRouter-compatible gateways and compatible hosted APIs;
+- native Ollama HTTP with model discovery/preflight, `keep_alive`, `num_ctx` and `num_gpu`;
+- OpenAI-compatible HTTP endpoints, including Ollama's compatibility endpoint, vLLM, LM Studio, OpenRouter-compatible gateways and compatible hosted APIs;
 - Anthropic Messages API;
 - Google Gemini generateContent API;
 - AWS Bedrock Converse through the authenticated AWS CLI.
@@ -54,7 +55,7 @@ Initialize OpenForge in an existing Git repository:
 cargo run -p openforge -- init /absolute/path/to/repository
 ```
 
-The checked-in `openforge.yaml` is local-first and points at an OpenAI-compatible Ollama endpoint. Configure the model ID and endpoint to match a model that actually exists in your environment.
+The checked-in `openforge.yaml` is local-first and uses the native Ollama provider with Qwen/DeepSeek coding models. The daemon preflights installed models and local RAM, the fabric falls back across eligible candidates, and the web/desktop model panel can pull missing models through the local Ollama MCP server. See [Ollama provider](docs/providers/ollama.md).
 
 Run an engineering objective:
 
@@ -73,6 +74,12 @@ Start the control-plane API:
 
 ```bash
 cargo run -p openforge-daemon -- --config openforge.yaml --listen 127.0.0.1:8765
+```
+
+Verify the complete local Ollama path:
+
+```bash
+./verify-ollama-openforge.sh
 ```
 
 Build the TypeScript clients:

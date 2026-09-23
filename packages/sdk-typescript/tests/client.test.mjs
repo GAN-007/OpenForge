@@ -87,3 +87,29 @@ test('runtime methods preserve policy paths, IDs and streamed payloads', async (
     ['plugins/capability/validate', { plugin_id: 'dev.test.plugin', capability: 'browser:navigate' }],
   ]);
 });
+
+test('local model helpers use preflight and structured Ollama MCP results', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const request = JSON.parse(init.body);
+    let result;
+    if (request.method === 'model/preflight') {
+      result = [{ provider: 'local', model: 'qwen', ready: true }];
+    } else if (request.method === 'mcp/call_tool') {
+      assert.equal(request.params.server_name, 'ollama');
+      result = {
+        content: [],
+        isError: false,
+        structuredContent: request.params.tool_name === 'list_models'
+          ? { models: [{ name: 'qwen' }] }
+          : { model: request.params.arguments.model, status: 'success', completed: true },
+      };
+    } else {
+      throw new Error('unexpected method ' + request.method);
+    }
+    return Response.json({ jsonrpc: '2.0', id: request.id, result });
+  });
+  const client = new OpenForgeClient('http://test');
+  assert.equal((await client.preflightModels())[0].ready, true);
+  assert.equal((await client.ollamaListModels()).models[0].name, 'qwen');
+  assert.equal((await client.ollamaPullModel('qwen')).completed, true);
+});

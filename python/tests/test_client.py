@@ -70,3 +70,33 @@ async def test_stream_reports_server_error():
         with pytest.raises(OpenForgeError, match="failed"):
             async for _ in client.stream_events("run"):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_local_model_helpers_decode_structured_mcp(monkeypatch):
+    async with OpenForgeClient() as client:
+        async def fake_rpc(method, params=None):
+            if method == "model/preflight":
+                return [{"provider": "local", "model": "qwen", "ready": True}]
+            if method == "mcp/call_tool":
+                if params["tool_name"] == "list_models":
+                    return {
+                        "content": [],
+                        "isError": False,
+                        "structuredContent": {"models": [{"name": "qwen"}]},
+                    }
+                return {
+                    "content": [],
+                    "isError": False,
+                    "structuredContent": {
+                        "model": params["arguments"]["model"],
+                        "status": "success",
+                        "completed": True,
+                    },
+                }
+            raise AssertionError(method)
+
+        monkeypatch.setattr(client, "rpc", fake_rpc)
+        assert (await client.model_preflight())[0]["ready"] is True
+        assert (await client.ollama_list_models())["models"][0]["name"] == "qwen"
+        assert (await client.ollama_pull_model("qwen"))["completed"] is True
