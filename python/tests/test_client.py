@@ -75,6 +75,7 @@ async def test_stream_reports_server_error():
 @pytest.mark.asyncio
 async def test_local_model_helpers_decode_structured_mcp(monkeypatch):
     async with OpenForgeClient() as client:
+
         async def fake_rpc(method, params=None):
             if method == "model/preflight":
                 return [{"provider": "local", "model": "qwen", "ready": True}]

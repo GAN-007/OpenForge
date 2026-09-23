@@ -116,9 +116,7 @@ class OpenForgeClient:
         self,
         policy_path: str = "config/policies/development.yaml",
     ) -> dict[str, Any]:
-        result = await self.mcp_call_tool(
-            "ollama", "list_models", {}, policy_path=policy_path
-        )
+        result = await self.mcp_call_tool("ollama", "list_models", {}, policy_path=policy_path)
         return self._structured_mcp_result(result)
 
     async def ollama_show_model(
