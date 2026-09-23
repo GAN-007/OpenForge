@@ -201,8 +201,7 @@ impl OllamaNativeAdapter {
             bail!("Ollama returned no assistant text");
         }
 
-        let cost = parsed.prompt_eval_count as f64 / 1_000_000.0
-            * model.input_usd_per_million
+        let cost = parsed.prompt_eval_count as f64 / 1_000_000.0 * model.input_usd_per_million
             + parsed.eval_count as f64 / 1_000_000.0 * model.output_usd_per_million;
         Ok(Some(ModelResponse {
             provider: provider_name.to_string(),
@@ -288,7 +287,8 @@ fn model_name_matches(requested: &str, candidate: &TaggedModel) -> bool {
     candidate.name == requested
         || candidate.model.as_deref() == Some(requested)
         || (!requested.contains(':') && candidate.name == format!("{requested}:latest"))
-        || (!requested.contains(':') && candidate.model.as_deref() == Some(&format!("{requested}:latest")))
+        || (!requested.contains(':')
+            && candidate.model.as_deref() == Some(&format!("{requested}:latest")))
 }
 
 fn available_memory_bytes() -> Option<u64> {
@@ -316,7 +316,10 @@ fn ollama_error_hint(status: StatusCode, raw: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, routing::{get, post}};
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
     use openforge_protocol::{ChatMessage, DataClassification, ModelRequirements};
     use std::sync::{Arc, Mutex};
 
@@ -343,7 +346,10 @@ mod tests {
             invocation_id: uuid::Uuid::new_v4(),
             run_id: uuid::Uuid::new_v4(),
             task_id: None,
-            messages: vec![ChatMessage { role: "user".into(), content: "reply json".into() }],
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "reply json".into(),
+            }],
             requirements: ModelRequirements {
                 task_class: "test".into(),
                 context_tokens: 4096,
@@ -408,9 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_configured_model_fails_preflight_before_chat() {
-        let app = Router::new().route("/api/tags", get(|| async {
-            Json(json!({"models":[]}))
-        }));
+        let app = Router::new().route("/api/tags", get(|| async { Json(json!({"models":[]})) }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

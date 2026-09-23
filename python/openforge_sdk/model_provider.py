@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-ModelProviderKind = Literal['openai-compatible', 'anthropic', 'gemini', 'bedrock-aws-cli']
-DataClassification = Literal['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+ModelProviderKind = Literal["openai-compatible", "anthropic", "gemini", "bedrock-aws-cli"]
+DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
 
 
 class _ModelProviderModelRequired(TypedDict):

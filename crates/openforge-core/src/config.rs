@@ -8,8 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MODEL_PROVIDER_SCHEMA: &str =
-    include_str!("../../../schemas/model-provider.schema.json");
+const MODEL_PROVIDER_SCHEMA: &str = include_str!("../../../schemas/model-provider.schema.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenForgeConfig {

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use openforge_models::{FabricProvider, ModelProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider};
+use openforge_models::{
+    FabricProvider, ModelProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+};
 use openforge_protocol::{
     ChatMessage, DataClassification, ModelRequest, ModelRequirements, ModelSpec,
 };

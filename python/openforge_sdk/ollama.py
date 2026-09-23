@@ -15,17 +15,25 @@ def _decode_mcp(result: dict[str, Any]) -> Any:
             for item in result.get("content", [])
             if isinstance(item, dict) and item.get("type") == "text"
         ]
-        raise OpenForgeError("\n".join(message for message in messages if message) or "Ollama MCP call failed")
+        raise OpenForgeError(
+            "\n".join(message for message in messages if message) or "Ollama MCP call failed"
+        )
     if "structuredContent" in result:
         return result["structuredContent"]
     for item in result.get("content", []):
-        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ):
             return json.loads(item["text"])
     raise OpenForgeError("Ollama MCP response contained no structured result")
 
 
 async def list_ollama_models(client: OpenForgeClient) -> dict[str, Any]:
-    return cast(dict[str, Any], _decode_mcp(await client.mcp_call_tool("ollama", "list_models", {})))
+    return cast(
+        dict[str, Any], _decode_mcp(await client.mcp_call_tool("ollama", "list_models", {}))
+    )
 
 
 async def preflight_ollama_model(
