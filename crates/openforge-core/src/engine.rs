@@ -7,8 +7,8 @@ use openforge_context::RepositoryIndex;
 use openforge_git::{GitBroker, GitWorkspace};
 use openforge_models::{
     AnthropicConfig, AnthropicProvider, BedrockCliConfig, BedrockCliProvider, FabricProvider,
-    GeminiConfig, GeminiProvider, ModelProvider, ModelRouter, OpenAiCompatibleConfig,
-    OpenAiCompatibleProvider,
+    GeminiConfig, GeminiProvider, ModelPreflight, ModelProvider, ModelRouter, OllamaConfig,
+    OllamaProvider, OpenAiCompatibleConfig, OpenAiCompatibleProvider,
 };
 use openforge_policy::{AgentPolicy, CapabilityRequest, Decision};
 use openforge_protocol::{
@@ -114,6 +114,19 @@ impl Engine {
                         },
                     )?));
                 }
+                "ollama" => {
+                    if provider.base_url.trim().is_empty() {
+                        bail!("provider {} requires base_url", provider.name);
+                    }
+                    providers.push(Arc::new(OllamaProvider::new(OllamaConfig {
+                        provider_name: provider.name.clone(),
+                        base_url: provider.base_url.clone(),
+                        models,
+                        keep_alive: provider.keep_alive.clone().unwrap_or_else(|| "10m".into()),
+                        num_ctx: provider.num_ctx,
+                        num_gpu: provider.num_gpu,
+                    })?));
+                }
                 "anthropic" => {
                     let env = provider
                         .api_key_env
@@ -218,6 +231,20 @@ impl Engine {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect()
+    }
+
+    pub async fn model_preflight(&self) -> Vec<ModelPreflight> {
+        let provider = self.model_provider();
+        let mut reports = Vec::with_capacity(provider.catalog().len());
+        for model in provider.catalog() {
+            reports.push(
+                provider
+                    .preflight(model)
+                    .await
+                    .unwrap_or_else(|error| ModelPreflight::unavailable(model, error.to_string())),
+            );
+        }
+        reports
     }
 
     pub async fn create_run(

@@ -203,6 +203,9 @@ pub struct ProviderConfig {
     pub region: Option<String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    pub keep_alive: Option<String>,
+    pub num_ctx: Option<u32>,
+    pub num_gpu: Option<i32>,
     pub models: Vec<ModelConfig>,
 }
 
