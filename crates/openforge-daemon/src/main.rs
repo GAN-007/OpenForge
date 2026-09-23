@@ -277,7 +277,14 @@ async fn handle(state: &AppState, request: RpcRequest) -> Result<Value> {
             if !preflight.iter().any(|report| report.ready) {
                 let detail = preflight
                     .iter()
-                    .map(|report| format!("{}/{}: {}", report.provider, report.model, report.detail.as_deref().unwrap_or("not ready")))
+                    .map(|report| {
+                        format!(
+                            "{}/{}: {}",
+                            report.provider,
+                            report.model,
+                            report.detail.as_deref().unwrap_or("not ready")
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(" | ");
                 anyhow::bail!("no configured model passed preflight: {detail}");

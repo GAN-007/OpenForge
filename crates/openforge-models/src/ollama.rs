@@ -80,10 +80,7 @@ impl OllamaProvider {
         if url.username() != "" || url.password().is_some() {
             bail!("Ollama base_url must not embed credentials");
         }
-        let local_endpoint = matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "localhost" | "::1")
-        );
+        let local_endpoint = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(180))
             .build()?;
@@ -152,7 +149,8 @@ impl ModelProvider for OllamaProvider {
         };
 
         let installed = tags.models.iter().find(|candidate| {
-            candidate.name == model.model || candidate.model.as_deref() == Some(model.model.as_str())
+            candidate.name == model.model
+                || candidate.model.as_deref() == Some(model.model.as_str())
         });
         let Some(installed_model) = installed else {
             return Ok(ModelPreflight {
@@ -164,7 +162,10 @@ impl ModelProvider for OllamaProvider {
                 loaded: Some(false),
                 available_memory_mb: local_available_memory_mb(self.local_endpoint),
                 required_memory_mb: None,
-                detail: Some(format!("model {} is not installed; run: ollama pull {}", model.model, model.model)),
+                detail: Some(format!(
+                    "model {} is not installed; run: ollama pull {}",
+                    model.model, model.model
+                )),
             });
         };
 
@@ -179,9 +180,7 @@ impl ModelProvider for OllamaProvider {
             })
             .unwrap_or(false);
         let available_memory_mb = local_available_memory_mb(self.local_endpoint);
-        let required_memory_mb = installed_model
-            .size
-            .map(required_memory_mb_for_model);
+        let required_memory_mb = installed_model.size.map(required_memory_mb_for_model);
 
         if !loaded
             && let (Some(available), Some(required)) = (available_memory_mb, required_memory_mb)
@@ -261,12 +260,18 @@ impl ModelProvider for OllamaProvider {
         if !status.is_success() {
             let error = serde_json::from_str::<Value>(&raw)
                 .ok()
-                .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_owned))
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
                 .unwrap_or_else(|| "Ollama rejected the request".into());
             bail!("Ollama returned HTTP {status}: {error}");
         }
 
-        let parsed: ChatResponse = serde_json::from_str(&raw).context("parse Ollama chat response")?;
+        let parsed: ChatResponse =
+            serde_json::from_str(&raw).context("parse Ollama chat response")?;
         let text = parsed.message.content;
         if text.trim().is_empty() {
             if parsed.done_reason.as_deref() == Some("length") {
@@ -299,20 +304,30 @@ fn local_available_memory_mb(local_endpoint: bool) -> Option<u64> {
     let raw = fs::read_to_string("/proc/meminfo").ok()?;
     raw.lines().find_map(|line| {
         let rest = line.strip_prefix("MemAvailable:")?;
-        rest.split_whitespace().next()?.parse::<u64>().ok().map(|kb| kb / 1024)
+        rest.split_whitespace()
+            .next()?
+            .parse::<u64>()
+            .ok()
+            .map(|kb| kb / 1024)
     })
 }
 
 fn required_memory_mb_for_model(size_bytes: u64) -> u64 {
     let size_mb = size_bytes.div_ceil(1024 * 1024);
-    size_mb.saturating_mul(115).div_ceil(100).saturating_add(512)
+    size_mb
+        .saturating_mul(115)
+        .div_ceil(100)
+        .saturating_add(512)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
     use openforge_protocol::{DataClassification, ModelRequirements};
-    use axum::{Json, Router, routing::{get, post}};
     use uuid::Uuid;
 
     fn model(base_provider: &str) -> ModelSpec {
@@ -367,7 +382,8 @@ mod tests {
             keep_alive: "10m".into(),
             num_ctx: Some(4096),
             num_gpu: Some(0),
-        }).unwrap();
+        })
+        .unwrap();
         let preflight = provider.preflight(&spec).await.unwrap();
         assert!(preflight.ready);
         assert_eq!(preflight.installed, Some(true));
@@ -376,7 +392,10 @@ mod tests {
             invocation_id: Uuid::new_v4(),
             run_id: Uuid::new_v4(),
             task_id: None,
-            messages: vec![openforge_protocol::ChatMessage { role: "user".into(), content: "reply as JSON".into() }],
+            messages: vec![openforge_protocol::ChatMessage {
+                role: "user".into(),
+                content: "reply as JSON".into(),
+            }],
             requirements: ModelRequirements {
                 task_class: "test".into(),
                 context_tokens: 100,

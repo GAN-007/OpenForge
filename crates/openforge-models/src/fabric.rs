@@ -139,7 +139,13 @@ impl ModelProvider for FabricProvider {
             .providers
             .iter()
             .find(|provider| provider.name() == model.provider)
-            .ok_or_else(|| anyhow::anyhow!("no provider {} is registered for model {}", model.provider, model.model))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no provider {} is registered for model {}",
+                    model.provider,
+                    model.model
+                )
+            })?;
         provider.preflight(model).await
     }
 
