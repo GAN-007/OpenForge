@@ -4,6 +4,7 @@ import hashlib
 import io
 from pathlib import Path
 import shutil
+import subprocess
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,16 +22,12 @@ for index in range(11):
 encoded = "".join(chunks)
 encoded_sha = hashlib.sha256(encoded.encode("ascii")).hexdigest()
 if encoded_sha != EXPECTED_B64_SHA256:
-    raise SystemExit(
-        f"overlay base64 checksum mismatch: expected {EXPECTED_B64_SHA256}, got {encoded_sha}"
-    )
+    raise SystemExit(f"overlay base64 checksum mismatch: expected {EXPECTED_B64_SHA256}, got {encoded_sha}")
 
 archive = base64.b64decode(encoded, validate=True)
 archive_sha = hashlib.sha256(archive).hexdigest()
 if archive_sha != EXPECTED_ARCHIVE_SHA256:
-    raise SystemExit(
-        f"overlay archive checksum mismatch: expected {EXPECTED_ARCHIVE_SHA256}, got {archive_sha}"
-    )
+    raise SystemExit(f"overlay archive checksum mismatch: expected {EXPECTED_ARCHIVE_SHA256}, got {archive_sha}")
 
 with tarfile.open(fileobj=io.BytesIO(archive), mode="r:xz") as tar:
     members = tar.getmembers()
@@ -43,14 +40,17 @@ with tarfile.open(fileobj=io.BytesIO(archive), mode="r:xz") as tar:
             raise SystemExit(f"archive links are not allowed: {member.name}")
     tar.extractall(ROOT, members=members)
 
-# The transport mechanism is deliberately ephemeral.  The production commit
-# contains only the OpenForge implementation, tests, docs and configuration.
-for transient in [
-    ROOT / "scripts" / "apply_ollama_overlay.py",
-    ROOT / ".github" / "workflows" / "apply-ollama-overlay.yml",
-]:
-    if transient.exists():
-        transient.unlink()
+# GITHUB_TOKEN on this helper workflow intentionally has no workflows scope.
+# Keep workflow mutations out of its commit; the authenticated GitHub connector
+# applies the reviewed CI delta and removes this temporary workflow afterward.
+subprocess.run(
+    ["git", "restore", "--source=HEAD", "--", ".github/workflows/ci.yml"],
+    cwd=ROOT,
+    check=True,
+)
 
+script = ROOT / "scripts" / "apply_ollama_overlay.py"
+if script.exists():
+    script.unlink()
 if PARTS.exists():
     shutil.rmtree(PARTS)
