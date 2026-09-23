@@ -72,7 +72,7 @@ impl OllamaNativeAdapter {
             "127.0.0.1" | "localhost" | "::1" | "host.docker.internal"
         ) && port == 11434;
 
-        if (!local_ollama && !forced) || (path != "/v1" && !forced) {
+        if (path != "/v1" || !local_ollama) && !forced {
             return None;
         }
 
