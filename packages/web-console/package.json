@@ -13,7 +13,7 @@
     "@openforge/ui": "workspace:*",
     "@vitejs/plugin-react": "^5.0.2",
     "vite": "^7.1.5",
-    "typescript": "^5.9.2",
+    "typescript": "^7.0.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
