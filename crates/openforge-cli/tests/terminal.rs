@@ -67,7 +67,7 @@ async fn listing_is_local_and_failed_execution_keeps_terminal_open() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"/\n/status\n/budget 2\n/plan\n/mode execute\n/new\n/fork\n/resume\n/compact\n/connect should-not-be-forwarded\n/not-a-command\n/init\n/init\nlist all files and folders\nlist all files in this folder\nwhoami\npwd\nls\nFix a test\nSuccess\n/help\n/quit\n")
+        .write_all(b"/\n/status\n/budget 2\n/plan\n/mode execute\n/new\n/fork\n/resume\n/compact\n/connect should-not-be-forwarded\n/review unsupported-argument\n/not-a-command\n/init\n/init\nlist all files and folders\nlist all files in this folder\nwhoami\npwd\nls\nFix a test\nSuccess\n/help\n/quit\n")
         .await
         .unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait_with_output())
