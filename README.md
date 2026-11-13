@@ -2,7 +2,7 @@
 
 OpenForge is an open-source AI engineering operating system: a protocol-first control plane for secure, auditable, multi-agent software engineering across CLI, desktop, IDE, web, API, local and remote execution environments.
 
-It is not an editor fork and it does not combine six upstream agent repositories into a monolith. The canonical state lives in one daemon: runs, task DAGs, policy decisions, model usage, Git integration, memory and the append-only audit stream are shared by every client.
+It is not an editor fork and it does not combine The canonical state lives in one daemon: runs, task DAGs, policy decisions, model usage, Git integration, memory and the append-only audit stream are shared by every client.
 
 ## What is implemented
 
